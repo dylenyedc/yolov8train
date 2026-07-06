@@ -1,0 +1,15 @@
+*
+
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/train.py
+!/predict_testimage.py
+
+!/model_archieve/
+!/model_archieve/*.pt
+!/model_archieve/*.json
+
+!/testimage/
+!/testimage/**
+
