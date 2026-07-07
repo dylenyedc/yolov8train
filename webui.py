@@ -1,8 +1,10 @@
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +26,8 @@ STATE = {
     "logs": [],
 }
 STATE_LOCK = threading.Lock()
+CURRENT_PROCESS: subprocess.Popen | None = None
+CURRENT_PROCESS_LOCK = threading.Lock()
 
 
 PAGE = r"""
@@ -110,6 +114,7 @@ PAGE = r"""
         <div class="stat"><strong>退出码</strong><span id="statusCode">-</span></div>
       </div>
       <div class="row" style="margin-bottom:10px">
+        <button id="stopTask">急停</button>
         <button id="clearLogs" class="secondary">清空显示</button>
       </div>
       <pre id="logs"></pre>
@@ -179,6 +184,7 @@ PAGE = r"""
 
     $("refreshOptions").onclick = loadOptions;
     $("refreshRuns").onclick = loadRuns;
+    $("stopTask").onclick = () => postJson("/api/stop", {});
     $("clearLogs").onclick = () => { $("logs").textContent = ""; };
 
     function csvTable(rows) {
@@ -229,6 +235,7 @@ PAGE = r"""
       $("logs").textContent = data.logs.join("");
       $("startTrain").disabled = data.running;
       $("startValidate").disabled = data.running;
+      $("stopTask").disabled = !data.running;
     }
 
     loadOptions();
@@ -385,6 +392,7 @@ def run_summaries() -> list[dict]:
 
 
 def start_process(kind: str, args: list[str], env_updates: dict[str, str]) -> tuple[bool, str | None]:
+    global CURRENT_PROCESS
     with STATE_LOCK:
         if STATE["running"]:
             return False, "已有任务正在运行"
@@ -411,12 +419,18 @@ def start_process(kind: str, args: list[str], env_updates: dict[str, str]) -> tu
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=1,
+            start_new_session=True,
         )
+        with CURRENT_PROCESS_LOCK:
+            CURRENT_PROCESS = process
         assert process.stdout is not None
         for line in process.stdout:
             append_log(line)
         returncode = process.wait()
         append_log(f"\n[{now_text()}] 任务结束，退出码 {returncode}\n")
+        with CURRENT_PROCESS_LOCK:
+            if CURRENT_PROCESS is process:
+                CURRENT_PROCESS = None
         with STATE_LOCK:
             STATE["running"] = False
             STATE["finished_at"] = now_text()
@@ -424,6 +438,33 @@ def start_process(kind: str, args: list[str], env_updates: dict[str, str]) -> tu
 
     threading.Thread(target=worker, daemon=True).start()
     return True, None
+
+
+def stop_current_process() -> tuple[bool, str]:
+    with CURRENT_PROCESS_LOCK:
+        process = CURRENT_PROCESS
+    if process is None or process.poll() is not None:
+        with STATE_LOCK:
+            STATE["running"] = False
+        return False, "当前没有运行中的任务"
+
+    append_log(f"\n[{now_text()}] 收到急停请求，正在终止任务...\n")
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True, "任务已经结束"
+
+    for _ in range(20):
+        if process.poll() is not None:
+            return True, "任务已终止"
+        time.sleep(0.2)
+
+    append_log(f"[{now_text()}] 任务未响应 SIGTERM，发送 SIGKILL...\n")
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True, "已发送强制终止"
 
 
 @APP.get("/")
@@ -444,6 +485,12 @@ def api_options():
 def api_status():
     with STATE_LOCK:
         return jsonify(dict(STATE))
+
+
+@APP.post("/api/stop")
+def api_stop():
+    ok, message = stop_current_process()
+    return jsonify({"ok": ok, "message": message})
 
 
 @APP.get("/api/runs")

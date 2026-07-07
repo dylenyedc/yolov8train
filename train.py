@@ -96,7 +96,18 @@ def resolve_split(config_path: Path, config: dict, split: str) -> Path | None:
     base = Path(config.get("path") or config_path.parent)
     if not base.is_absolute():
         base = config_path.parent / base
-    return (base / path).resolve()
+    resolved = (base / path).resolve()
+    if resolved.exists():
+        return resolved
+
+    # Roboflow exports often use ../train/images even when the dataset is
+    # later placed in its own folder. In that layout, ./train/images is right.
+    parts = path.parts
+    if parts and parts[0] == "..":
+        local_path = (config_path.parent / Path(*parts[1:])).resolve()
+        if local_path.exists() or not resolved.exists():
+            return local_path
+    return resolved
 
 
 def dataset_id(config_path: Path) -> str:
@@ -186,6 +197,8 @@ def split_paths(config_paths: list[Path], split: str) -> list[str]:
         split_path = resolve_split(config_path, config, split)
         if split_path is None:
             raise ValueError(f"{config_path} must define {split} split")
+        if not split_path.exists():
+            raise FileNotFoundError(f"{config_path} defines {split} split, but path was not found: {split_path}")
         paths.append(str(split_path))
     return paths
 
@@ -198,8 +211,10 @@ def source_split_paths(sources: list[tuple[Path, str | None]], default_split: st
         split_path = resolve_split(config_path, config, split)
         if split_path is None:
             raise ValueError(f"{config_path} must define {split} split")
-        if explicit_split == GOLDEN_SPLIT and not split_path.exists():
-            raise FileNotFoundError(f"Golden split was selected but not found: {split_path}")
+        if not split_path.exists():
+            if explicit_split == GOLDEN_SPLIT:
+                raise FileNotFoundError(f"Golden split was selected but not found: {split_path}")
+            raise FileNotFoundError(f"{config_path} defines {split} split, but path was not found: {split_path}")
         paths.append(str(split_path))
     return paths
 
@@ -209,7 +224,7 @@ def optional_split_paths(config_paths: list[Path], split: str) -> list[str]:
     for config_path in config_paths:
         config = load_yaml(config_path)
         split_path = resolve_split(config_path, config, split)
-        if split_path is not None:
+        if split_path is not None and split_path.exists():
             paths.append(str(split_path))
     return paths
 
