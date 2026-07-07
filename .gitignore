@@ -5,6 +5,7 @@
 !/requirements.txt
 !/train.py
 !/predict_testimage.py
+!/interactive.py
 
 !/model_archieve/
 !/model_archieve/*.pt
@@ -12,4 +13,3 @@
 
 !/testimage/
 !/testimage/**
-

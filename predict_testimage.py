@@ -20,7 +20,7 @@ def clear_result_dir() -> None:
             item.unlink()
 
 
-def main() -> None:
+def run_prediction(weights: Path | str | None = None) -> None:
     SOURCE_DIR.mkdir(parents=True, exist_ok=True)
     clear_result_dir()
 
@@ -32,8 +32,10 @@ def main() -> None:
         print(f"No images found in {SOURCE_DIR}")
         return
 
-    weights = DEFAULT_WEIGHTS if DEFAULT_WEIGHTS.exists() else Path("yolov8n.pt")
-    model = YOLO(str(weights))
+    weights_path = Path(weights) if weights is not None else DEFAULT_WEIGHTS
+    if not weights_path.exists():
+        weights_path = Path("yolov8n.pt")
+    model = YOLO(str(weights_path))
     model.predict(
         source=[str(path) for path in images],
         imgsz=640,
@@ -45,6 +47,10 @@ def main() -> None:
         exist_ok=True,
     )
     print(f"Saved detection results to {RESULT_DIR}")
+
+
+def main() -> None:
+    run_prediction()
 
 
 if __name__ == "__main__":
