@@ -5,11 +5,10 @@
 ## 目录说明
 
 - `train.py`：训练脚本。
-- `predict_testimage.py`：测试脚本，会读取 `testimage/` 里的所有图片，先清空 `testimage-result/`，再保存识别结果。
 - `interactive.py`：交互式训练/验证脚本。
+- `webui.py`：网页训练/验证控制台。
 - `requirements.txt`：Python 依赖。
 - `model_archieve/`：已归档的模型权重和对应元数据。
-- `testimage/`：用于快速测试识别效果的图片目录。
 
 ## 安装环境
 
@@ -70,6 +69,20 @@ YOLO_TRAIN_DATASET_PATH=barrel:bucket YOLO_VALID_DATASET_PATH=white_cylinder_det
 
 兼容写法 `YOLO_VAL_DATASET_PATH` 也可以使用，但推荐用 `YOLO_VALID_DATASET_PATH`。
 
+可以使用金样本子集 `golden`。它不是 `train/valid/test`，而是每个数据集目录下的额外子目录：
+
+```text
+datasets/<dataset>/golden/images
+datasets/<dataset>/golden/labels
+```
+
+如果某个数据集有 `golden/images`，交互界面会显示 `dataset/golden` 选项。命令行中可以写成 `dataset@golden`，它可以被加入训练集、验证集或测试集：
+
+```bash
+YOLO_TRAIN_DATASET_PATH=bucket@golden YOLO_VALID_DATASET_PATH=bucket .venv/bin/python train.py
+YOLO_TRAIN_DATASET_PATH=barrel:bucket@golden YOLO_VALID_DATASET_PATH=white_cylinder_detection .venv/bin/python train.py
+```
+
 训练完成后，脚本会把 `runs/detect/train/weights/best.pt` 复制到 `model_archieve/`。权重文件名包含基础模型、训练时间和数据集名称，例如：
 
 ```text
@@ -100,7 +113,7 @@ yolov8n_20260707_021500_mixed_barrel_bucket_white_cylinder_detection.pt
 2. 选择基础模型，例如 `yolov8n`、`yolov8s`。
 3. 选择一个或多个训练集来源。
 4. 选择一个或多个验证集来源。
-5. 数据集列表里会显示每个数据集目录的最后更新时间。
+5. 数据集列表里会显示每个数据集目录的最后更新时间；如果存在 `golden/images`，也会显示 `dataset/golden` 金样本子集。
 6. 数据集列表里用 ↑/↓ 移动，Enter 勾选，移动到最下面的 `Next` 后按 Enter 继续。
 7. 如果选择训练，脚本会开始训练并自动归档权重。
 8. 训练结束后会询问是否验证。
@@ -115,27 +128,37 @@ runs/detect/train/weights/last.pt
 runs/detect/train/weights/best.pt
 ```
 
-交互式验证不会再选择数据集，它会使用选中的权重直接对 `testimage/` 里的图片跑识别，并输出到 `testimage-result/`。
+交互式验证会让你选择测试集来源，然后使用这些数据集里的 `test/images` 跑 YOLO 验证。测试集来源也支持多选和 `dataset/golden`。
 
-## 测试图片
-
-把要测试的图片放进 `testimage/`，然后运行：
+命令行也可以生成测试集配置：
 
 ```bash
-.venv/bin/python predict_testimage.py
+YOLO_TEST_DATASET_PATH=bucket@golden .venv/bin/python - <<'PY'
+import train
+print(train.testing_data_config())
+PY
 ```
 
-脚本会：
+## WebUI
 
-1. 清空 `testimage-result/`
-2. 读取 `testimage/` 里的所有图片
-3. 使用默认权重进行识别
-4. 把标注后的图片保存到 `testimage-result/`
+也可以启动网页控制台：
 
-默认权重路径是：
+```bash
+.venv/bin/python webui.py
+```
+
+默认地址：
 
 ```text
-runs/detect/train/weights/best.pt
+http://127.0.0.1:7860
 ```
 
-如果这个文件不存在，脚本会退回使用 `yolov8n.pt`。
+页面功能：
+
+- 选择基础模型。
+- 多选训练集来源。
+- 多选验证集来源。
+- 多选测试集来源。
+- 选择 `model_archieve/` 里的归档权重或最近一次训练的 `last.pt` / `best.pt`。
+- 右侧显示后台任务日志和退出码，效果类似终端状态。
+- 展示 `runs/` 里的训练、验证、测试结果，包括曲线图、混淆矩阵、batch 图、`results.csv` 预览和文件链接。

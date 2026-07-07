@@ -4,12 +4,9 @@
 !/README.md
 !/requirements.txt
 !/train.py
-!/predict_testimage.py
 !/interactive.py
+!/webui.py
 
 !/model_archieve/
 !/model_archieve/*.pt
 !/model_archieve/*.json
-
-!/testimage/
-!/testimage/**

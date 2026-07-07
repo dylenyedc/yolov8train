@@ -19,7 +19,9 @@ DATASET_ENV = "YOLO_DATASET_PATH"
 TRAIN_DATASET_ENV = "YOLO_TRAIN_DATASET_PATH"
 VAL_DATASET_ENV = "YOLO_VAL_DATASET_PATH"
 VALID_DATASET_ENV = "YOLO_VALID_DATASET_PATH"
+TEST_DATASET_ENV = "YOLO_TEST_DATASET_PATH"
 MIXED_DATASET_CLASS_NAME = "busket"
+GOLDEN_SPLIT = "golden"
 
 
 def safe_name(value: object) -> str:
@@ -48,18 +50,28 @@ def dataset_config_path(path: Path) -> Path:
     return path.resolve()
 
 
-def parse_dataset_configs(value: str, env_name: str) -> list[Path]:
+def parse_dataset_sources(value: str, env_name: str) -> list[tuple[Path, str | None]]:
     raw_paths = [
         part.strip()
         for chunk in value.split(os.pathsep)
         for part in chunk.split(",")
         if part.strip()
     ]
-    config_paths = [dataset_config_path(Path(path)) for path in raw_paths]
-    unique_paths = list(dict.fromkeys(config_paths))
-    if not unique_paths:
+    sources: list[tuple[Path, str | None]] = []
+    for raw_path in raw_paths:
+        if "@" in raw_path:
+            dataset_path, split = raw_path.rsplit("@", 1)
+            sources.append((dataset_config_path(Path(dataset_path)), safe_name(split)))
+        else:
+            sources.append((dataset_config_path(Path(raw_path)), None))
+    unique_sources = list(dict.fromkeys(sources))
+    if not unique_sources:
         raise ValueError(f"{env_name} did not contain any dataset paths")
-    return unique_paths
+    return unique_sources
+
+
+def parse_dataset_configs(value: str, env_name: str) -> list[Path]:
+    return list(dict.fromkeys(config_path for config_path, _ in parse_dataset_sources(value, env_name)))
 
 
 def selected_dataset_configs(env_name: str = DATASET_ENV, default: Path | str | None = None) -> list[Path]:
@@ -71,11 +83,14 @@ def selected_dataset_configs(env_name: str = DATASET_ENV, default: Path | str | 
 
 def resolve_split(config_path: Path, config: dict, split: str) -> Path | None:
     value = config.get(split)
-    if not value:
+    if value:
+        if isinstance(value, list):
+            raise ValueError(f"{config_path} already contains a list for {split}; nested mixing is not supported")
+        path = Path(value)
+    elif split == GOLDEN_SPLIT:
+        path = Path(GOLDEN_SPLIT) / "images"
+    else:
         return None
-    if isinstance(value, list):
-        raise ValueError(f"{config_path} already contains a list for {split}; nested mixing is not supported")
-    path = Path(value)
     if path.is_absolute():
         return path
     base = Path(config.get("path") or config_path.parent)
@@ -141,6 +156,18 @@ def dataset_names(config_paths: list[Path]) -> list[str]:
     return [dataset_id(path) for path in config_paths]
 
 
+def source_name(source: tuple[Path, str | None], default_split: str) -> str:
+    config_path, split = source
+    split_name = split or default_split
+    if split_name in {"train", "val", "valid", "test"}:
+        return dataset_id(config_path)
+    return safe_name(f"{dataset_id(config_path)}_{split_name}")
+
+
+def source_names(sources: list[tuple[Path, str | None]], default_split: str) -> list[str]:
+    return [source_name(source, default_split) for source in sources]
+
+
 def combined_dataset_name(config_paths: list[Path], prefix: str = "mixed") -> str:
     names = dataset_names(config_paths)
     if len(names) == 1:
@@ -163,6 +190,20 @@ def split_paths(config_paths: list[Path], split: str) -> list[str]:
     return paths
 
 
+def source_split_paths(sources: list[tuple[Path, str | None]], default_split: str) -> list[str]:
+    paths: list[str] = []
+    for config_path, explicit_split in sources:
+        split = explicit_split or default_split
+        config = load_yaml(config_path)
+        split_path = resolve_split(config_path, config, split)
+        if split_path is None:
+            raise ValueError(f"{config_path} must define {split} split")
+        if explicit_split == GOLDEN_SPLIT and not split_path.exists():
+            raise FileNotFoundError(f"Golden split was selected but not found: {split_path}")
+        paths.append(str(split_path))
+    return paths
+
+
 def optional_split_paths(config_paths: list[Path], split: str) -> list[str]:
     paths: list[str] = []
     for config_path in config_paths:
@@ -173,18 +214,22 @@ def optional_split_paths(config_paths: list[Path], split: str) -> list[str]:
     return paths
 
 
-def cross_validation_dataset_config(train_paths: list[Path], val_paths: list[Path]) -> Path:
-    train_name = joined_dataset_name(train_paths)
-    val_name = joined_dataset_name(val_paths)
+def cross_validation_dataset_config(
+    train_sources: list[tuple[Path, str | None]],
+    val_sources: list[tuple[Path, str | None]],
+) -> Path:
+    train_name = safe_name("_".join(source_names(train_sources, "train")))
+    val_name = safe_name("_".join(source_names(val_sources, "val")))
     output_name = safe_name(f"cross_{train_name}_valid_{val_name}")
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"{output_name}.yaml"
     output = {
-        "train": split_paths(train_paths, "train"),
-        "val": split_paths(val_paths, "val"),
+        "train": source_split_paths(train_sources, "train"),
+        "val": source_split_paths(val_sources, "val"),
         "nc": 1,
         "names": [MIXED_DATASET_CLASS_NAME],
     }
+    val_paths = list(dict.fromkeys(config_path for config_path, _ in val_sources))
     test_paths = optional_split_paths(val_paths, "test")
     if test_paths:
         output["test"] = test_paths
@@ -193,14 +238,43 @@ def cross_validation_dataset_config(train_paths: list[Path], val_paths: list[Pat
     return output_path
 
 
+def test_dataset_config(test_sources: list[tuple[Path, str | None]]) -> tuple[Path, str, list[tuple[Path, str | None]]]:
+    test_name = safe_name("_".join(source_names(test_sources, "test")))
+    output_name = safe_name(f"test_{test_name}")
+    test_image_paths = source_split_paths(test_sources, "test")
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = GENERATED_DIR / f"{output_name}.yaml"
+    output = {
+        "train": test_image_paths,
+        "val": test_image_paths,
+        "test": test_image_paths,
+        "nc": 1,
+        "names": [MIXED_DATASET_CLASS_NAME],
+    }
+    with output_path.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(output, file, sort_keys=False, allow_unicode=True)
+    return output_path, output_name, test_sources
+
+
+def testing_data_config() -> tuple[Path, str, list[tuple[Path, str | None]]]:
+    value = os.environ.get(TEST_DATASET_ENV, str(DEFAULT_DATASET))
+    test_sources = parse_dataset_sources(value, TEST_DATASET_ENV)
+    return test_dataset_config(test_sources)
+
+
 def training_data_config() -> tuple[Path, str, list[Path], list[Path]]:
     train_value = os.environ.get(TRAIN_DATASET_ENV)
     val_value = os.environ.get(VALID_DATASET_ENV) or os.environ.get(VAL_DATASET_ENV)
     if train_value is not None or val_value is not None:
-        train_paths = parse_dataset_configs(train_value or str(DEFAULT_DATASET), TRAIN_DATASET_ENV)
-        val_paths = parse_dataset_configs(val_value or train_value or str(DEFAULT_DATASET), VAL_DATASET_ENV)
-        dataset_name = safe_name(f"train_{joined_dataset_name(train_paths)}_valid_{joined_dataset_name(val_paths)}")
-        return cross_validation_dataset_config(train_paths, val_paths), dataset_name, train_paths, val_paths
+        train_sources = parse_dataset_sources(train_value or str(DEFAULT_DATASET), TRAIN_DATASET_ENV)
+        val_sources = parse_dataset_sources(val_value or train_value or str(DEFAULT_DATASET), VAL_DATASET_ENV)
+        train_paths = list(dict.fromkeys(config_path for config_path, _ in train_sources))
+        val_paths = list(dict.fromkeys(config_path for config_path, _ in val_sources))
+        dataset_name = safe_name(
+            f"train_{'_'.join(source_names(train_sources, 'train'))}"
+            f"_valid_{'_'.join(source_names(val_sources, 'val'))}"
+        )
+        return cross_validation_dataset_config(train_sources, val_sources), dataset_name, train_paths, val_paths
 
     config_paths = selected_dataset_configs()
     if len(config_paths) == 1:
@@ -250,6 +324,16 @@ def run_training(base_model: str = BASE_MODEL) -> Path:
     data_config, dataset_name, train_config_paths, val_config_paths = training_data_config()
     print(f"Using dataset config: {data_config}")
     model = YOLO(f"{base_model}.pt")
+    model.train(
+        data=str(data_config),
+        epochs=100,
+        imgsz=640,
+        batch=16,
+        device=0,
+        project=str(ROOT / "runs" / "detect"),
+        name="train",
+        exist_ok=True,
+    )
     archive_path = archive_best_weights(dataset_name, data_config, train_config_paths, val_config_paths, base_model)
     print(f"Archived best weights to {archive_path}")
     return archive_path

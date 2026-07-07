@@ -4,8 +4,9 @@ import os
 from pathlib import Path
 from datetime import datetime
 
+from ultralytics import YOLO
+
 import train
-import predict_testimage
 
 
 BASE_MODEL_CHOICES = ["yolov8n", "yolov8s", "yolov8m", "yolov8l", "yolov8x"]
@@ -83,6 +84,10 @@ def dataset_choices() -> list[tuple[str, str]]:
         name = config_path.parent.name
         label = f"{name} | updated {dataset_last_updated(config_path.parent)}"
         choices.append((label, name))
+        golden_dir = config_path.parent / train.GOLDEN_SPLIT / "images"
+        if golden_dir.exists():
+            golden_label = f"{name}/{train.GOLDEN_SPLIT} | updated {dataset_last_updated(golden_dir.parent)}"
+            choices.append((golden_label, f"{name}@{train.GOLDEN_SPLIT}"))
     return choices
 
 
@@ -114,10 +119,18 @@ def lastrun_options() -> list[tuple[str, Path]]:
     ]
 
 
-def validate_weights(weights_path: Path) -> None:
+def validate_weights(weights_path: Path, test_config: Path) -> None:
     if not weights_path.exists():
         raise FileNotFoundError(f"权重不存在: {weights_path}")
-    predict_testimage.run_prediction(weights_path)
+    model = YOLO(str(weights_path))
+    model.val(
+        data=str(test_config),
+        split="test",
+        device=0,
+        project=str(train.ROOT / "runs" / "detect"),
+        name="test",
+        exist_ok=True,
+    )
 
 
 def choose_dataset_names(stdscr, title: str) -> list[str]:
@@ -135,6 +148,13 @@ def choose_training_datasets(stdscr) -> tuple[list[str], list[str], Path, str]:
     os.environ[train.VALID_DATASET_ENV] = os.pathsep.join(val_datasets)
     data_config, dataset_name, _, _ = train.training_data_config()
     return train_datasets, val_datasets, data_config, dataset_name
+
+
+def choose_test_datasets(stdscr) -> tuple[list[str], Path, str]:
+    test_datasets = choose_dataset_names(stdscr, "选择测试集来源")
+    os.environ[train.TEST_DATASET_ENV] = os.pathsep.join(test_datasets)
+    test_config, test_name, _ = train.testing_data_config()
+    return test_datasets, test_config, test_name
 
 
 def run_outside_curses(stdscr, action) -> None:
@@ -183,10 +203,14 @@ def interactive(stdscr) -> None:
         label = choose_one(stdscr, "选择最近一次训练权重", [item[0] for item in choices])
         weights_path = dict(choices)[label]
 
+    test_datasets, test_config, test_name = choose_test_datasets(stdscr)
+
     def validate_action() -> None:
         print(f"Validate weights: {weights_path}")
-        print(f"Validate images: {predict_testimage.SOURCE_DIR}")
-        validate_weights(weights_path)
+        print(f"Test datasets: {', '.join(test_datasets)}")
+        print(f"Test name: {test_name}")
+        print(f"Test config: {test_config}")
+        validate_weights(weights_path, test_config)
 
     run_outside_curses(stdscr, validate_action)
 
