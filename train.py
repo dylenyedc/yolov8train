@@ -5,6 +5,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import yaml
 from ultralytics import YOLO
 
@@ -14,20 +19,178 @@ DATASETS_DIR = ROOT / "datasets"
 DEFAULT_DATASET = DATASETS_DIR / "white_cylinder_detection"
 GENERATED_DIR = ROOT / ".generated"
 ARCHIVE_DIR = ROOT / "model_archieve"
+DISABLED_ARCHIVE_DIR = ROOT / "model_archieve_disabled"
 BASE_MODEL = "yolov8n"
+MODEL_FAMILIES = {
+    "yolo8": {
+        "prefix": "yolov8",
+        "sizes": ["n", "s", "m", "l", "x"],
+        "description": "YOLOv8",
+    },
+    "yolo26": {
+        "prefix": "yolo26",
+        "sizes": ["n", "s", "m", "l", "x"],
+        "description": "YOLO26",
+    },
+    "yolo11": {
+        "prefix": "yolo11",
+        "sizes": ["n", "s", "m", "l", "x"],
+        "description": "YOLO11",
+    },
+    "yolo10": {
+        "prefix": "yolov10",
+        "sizes": ["n", "s", "m", "l", "x"],
+        "description": "YOLOv10",
+    },
+}
+DEFAULT_MODEL_FAMILY = "yolo8"
+DEFAULT_MODEL_SIZE = "n"
 DATASET_ENV = "YOLO_DATASET_PATH"
 TRAIN_DATASET_ENV = "YOLO_TRAIN_DATASET_PATH"
 VAL_DATASET_ENV = "YOLO_VAL_DATASET_PATH"
 VALID_DATASET_ENV = "YOLO_VALID_DATASET_PATH"
 TEST_DATASET_ENV = "YOLO_TEST_DATASET_PATH"
+TRAIN_PRESET_ENV = "YOLO_TRAIN_PRESET"
 MIXED_DATASET_CLASS_NAME = "busket"
 GOLDEN_SPLIT = "golden"
+MODEL_COLORS = [
+    (36, 99, 235),
+    (220, 38, 38),
+    (5, 150, 105),
+    (217, 119, 6),
+    (124, 58, 237),
+    (8, 145, 178),
+    (190, 24, 93),
+    (77, 124, 15),
+]
+AUGMENT_PRESETS = {
+    "official_default": {
+        "description": "Ultralytics YOLOv8 默认训练/增强参数",
+        "args": {
+            "epochs": 100,
+            "patience": 100,
+            "hsv_h": 0.015,
+            "hsv_s": 0.7,
+            "hsv_v": 0.4,
+            "degrees": 0.0,
+            "translate": 0.1,
+            "scale": 0.5,
+            "perspective": 0.0,
+            "fliplr": 0.5,
+            "mosaic": 1.0,
+            "mixup": 0.0,
+            "close_mosaic": 10,
+        },
+    },
+    "saturation_heavy": {
+        "description": "颜色扰动更强，几何扰动保持温和",
+        "args": {
+            "epochs": 60,
+            "patience": 12,
+            "hsv_h": 0.03,
+            "hsv_s": 0.9,
+            "hsv_v": 0.55,
+            "degrees": 8.0,
+            "translate": 0.1,
+            "scale": 0.5,
+            "perspective": 0.0005,
+            "fliplr": 0.5,
+            "mosaic": 0.3,
+            "mixup": 0.0,
+            "close_mosaic": 10,
+        },
+    },
+    "physical_heavy": {
+        "description": "几何/视角扰动更强，颜色扰动较克制",
+        "args": {
+            "epochs": 60,
+            "patience": 12,
+            "hsv_h": 0.02,
+            "hsv_s": 0.5,
+            "hsv_v": 0.35,
+            "degrees": 15.0,
+            "translate": 0.15,
+            "scale": 0.65,
+            "perspective": 0.001,
+            "fliplr": 0.5,
+            "mosaic": 0.3,
+            "mixup": 0.0,
+            "close_mosaic": 10,
+        },
+    },
+    "saturation_physical_heavy": {
+        "description": "颜色和几何/视角扰动都更强",
+        "args": {
+            "epochs": 60,
+            "patience": 12,
+            "hsv_h": 0.03,
+            "hsv_s": 0.9,
+            "hsv_v": 0.55,
+            "degrees": 15.0,
+            "translate": 0.15,
+            "scale": 0.65,
+            "perspective": 0.001,
+            "fliplr": 0.5,
+            "mosaic": 0.3,
+            "mixup": 0.0,
+            "close_mosaic": 10,
+        },
+    },
+}
+DEFAULT_AUGMENT_PRESET = "official_default"
 
 
 def safe_name(value: object) -> str:
     text = str(value or "dataset").strip()
     text = re.sub(r"[^0-9A-Za-z._-]+", "_", text)
     return text.strip("._-") or "dataset"
+
+
+def model_family_options() -> list[str]:
+    return list(MODEL_FAMILIES)
+
+
+def model_size_options(family: str) -> list[str]:
+    family_name = safe_name(family)
+    if family_name not in MODEL_FAMILIES:
+        available = ", ".join(model_family_options())
+        raise ValueError(f"Unknown model family: {family_name}. Available families: {available}")
+    return list(MODEL_FAMILIES[family_name]["sizes"])
+
+
+def resolve_base_model(family_or_model: str | None = None, size: str | None = None) -> str:
+    value = safe_name(family_or_model or DEFAULT_MODEL_FAMILY)
+    if size is None and value not in MODEL_FAMILIES:
+        return value
+    family_name = value
+    if family_name not in MODEL_FAMILIES:
+        available = ", ".join(model_family_options())
+        raise ValueError(f"Unknown model family: {family_name}. Available families: {available}")
+    model_size = safe_name(size or DEFAULT_MODEL_SIZE)
+    if model_size not in MODEL_FAMILIES[family_name]["sizes"]:
+        available = ", ".join(model_size_options(family_name))
+        raise ValueError(f"Unknown model size for {family_name}: {model_size}. Available sizes: {available}")
+    return f"{MODEL_FAMILIES[family_name]['prefix']}{model_size}"
+
+
+def model_weight_source(base_model: str) -> str:
+    local_weights = ROOT / f"{base_model}.pt"
+    if local_weights.exists():
+        return str(local_weights)
+    return f"{base_model}.pt"
+
+
+def augment_preset_options() -> list[str]:
+    return list(AUGMENT_PRESETS)
+
+
+def resolve_augment_preset(value: str | None = None) -> tuple[str, dict]:
+    preset_name = safe_name(value or os.environ.get(TRAIN_PRESET_ENV) or DEFAULT_AUGMENT_PRESET)
+    if preset_name not in AUGMENT_PRESETS:
+        available = ", ".join(augment_preset_options())
+        raise ValueError(f"Unknown training preset: {preset_name}. Available presets: {available}")
+    preset = AUGMENT_PRESETS[preset_name]
+    return preset_name, dict(preset["args"])
 
 
 def load_yaml(path: Path) -> dict:
@@ -277,6 +440,122 @@ def testing_data_config() -> tuple[Path, str, list[tuple[Path, str | None]]]:
     return test_dataset_config(test_sources)
 
 
+def mean_curve(y_values: object, x_values: np.ndarray) -> np.ndarray:
+    values = np.asarray(y_values, dtype=float)
+    if values.ndim == 1:
+        return values
+    if values.shape[0] == len(x_values):
+        return values.mean(axis=1)
+    if values.shape[-1] == len(x_values):
+        return values.mean(axis=0)
+    return values.reshape(-1, values.shape[-1]).mean(axis=0)
+
+
+def metric_curve_payload(metrics, weight_path: Path) -> dict:
+    curves = {}
+    for x_values, y_values, x_label, y_label in metrics.curves_results:
+        x_array = np.asarray(x_values, dtype=float)
+        y_array = mean_curve(y_values, x_array)
+        key = safe_name(f"{y_label}_vs_{x_label}")
+        curves[key] = {
+            "x": x_array.tolist(),
+            "y": y_array.tolist(),
+            "x_label": x_label,
+            "y_label": y_label,
+        }
+    return {
+        "model": weight_path.name,
+        "weight_path": str(weight_path),
+        "metrics": {key: float(value) for key, value in metrics.results_dict.items()},
+        "curves": curves,
+    }
+
+
+def write_batch_metric_curves(results: list[dict], output_dir: Path) -> None:
+    if not results:
+        raise ValueError("没有可绘制的测试结果")
+
+    preferred_order = [
+        "Precision_vs_Recall",
+        "F1_vs_Confidence",
+        "Precision_vs_Confidence",
+        "Recall_vs_Confidence",
+    ]
+    available = [
+        key
+        for key in preferred_order
+        if any(key in item["curves"] for item in results)
+    ]
+    if not available:
+        raise ValueError("测试结果里没有可绘制的曲线数据")
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 10), dpi=150)
+    axes_flat = axes.flatten()
+    for axis in axes_flat:
+        axis.set_visible(False)
+
+    for curve_index, curve_key in enumerate(available[:4]):
+        axis = axes_flat[curve_index]
+        axis.set_visible(True)
+        for model_index, item in enumerate(results):
+            curve = item["curves"].get(curve_key)
+            if curve is None:
+                continue
+            color = tuple(component / 255 for component in MODEL_COLORS[model_index % len(MODEL_COLORS)])
+            axis.plot(curve["x"], curve["y"], linewidth=2, color=color, label=f"{model_index + 1}: {item['model']}")
+            axis.set_xlabel(curve["x_label"])
+            axis.set_ylabel(curve["y_label"])
+        axis.set_title(curve_key.replace("_", " "))
+        axis.grid(True, alpha=0.3)
+        axis.set_ylim(0, 1.02)
+
+    handles, labels = axes_flat[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="lower center", ncol=1, fontsize=8)
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
+    fig.savefig(output_dir / "comparison_curves.png")
+    plt.close(fig)
+
+    with (output_dir / "comparison_curves.json").open("w", encoding="utf-8") as file:
+        json.dump(results, file, ensure_ascii=False, indent=2)
+
+
+def run_batch_testing(weight_paths: list[Path]) -> Path:
+    if not weight_paths:
+        raise ValueError("至少需要选择一个权重")
+    resolved_weights = [Path(path).expanduser().resolve() for path in weight_paths]
+    missing_weights = [path for path in resolved_weights if not path.exists()]
+    if missing_weights:
+        raise FileNotFoundError(f"权重不存在: {missing_weights[0]}")
+
+    test_config, test_name, _ = testing_data_config()
+    now = datetime.now()
+    output_dir = ROOT / "runs" / "detect" / f"batch_test_{now:%Y%m%d_%H%M%S}_{test_name}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Test config: {test_config}")
+    print(f"Test name: {test_name}")
+    print(f"Batch output: {output_dir}")
+
+    batch_results: list[dict] = []
+    for index, weight_path in enumerate(resolved_weights, start=1):
+        run_name = f"{index:02d}_{safe_name(weight_path.stem)}"
+        print(f"Validate [{index}/{len(resolved_weights)}]: {weight_path}")
+        metrics = YOLO(str(weight_path)).val(
+            data=str(test_config),
+            split="test",
+            device=0,
+            project=str(output_dir),
+            name=run_name,
+            exist_ok=True,
+        )
+        batch_results.append(metric_curve_payload(metrics, weight_path))
+
+    print("Writing comparison curves...")
+    write_batch_metric_curves(batch_results, output_dir)
+    print(f"Batch testing finished: {output_dir}")
+    return output_dir
+
+
 def training_data_config() -> tuple[Path, str, list[Path], list[Path]]:
     train_value = os.environ.get(TRAIN_DATASET_ENV)
     val_value = os.environ.get(VALID_DATASET_ENV) or os.environ.get(VAL_DATASET_ENV)
@@ -303,6 +582,8 @@ def archive_best_weights(
     train_config_paths: list[Path],
     val_config_paths: list[Path],
     base_model: str = BASE_MODEL,
+    augment_preset_name: str = DEFAULT_AUGMENT_PRESET,
+    train_args: dict | None = None,
 ) -> Path:
     best_weights = ROOT / "runs" / "detect" / "train" / "weights" / "best.pt"
     if not best_weights.exists():
@@ -310,13 +591,15 @@ def archive_best_weights(
 
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    archive_name = f"{base_model}_{now:%Y%m%d_%H%M%S}_{dataset_name}.pt"
+    archive_name = f"{base_model}_{now:%Y%m%d_%H%M%S}_{dataset_name}_{augment_preset_name}.pt"
     archive_path = ARCHIVE_DIR / archive_name
     shutil.copy2(best_weights, archive_path)
 
     metadata = {
         "created_at": now.isoformat(timespec="microseconds"),
         "base_model": base_model,
+        "augment_preset": augment_preset_name,
+        "train_args": train_args or {},
         "weights": str(archive_path),
         "source_weights": str(best_weights),
         "training_data_config": str(data_config),
@@ -335,21 +618,34 @@ def archive_best_weights(
     return archive_path
 
 
-def run_training(base_model: str = BASE_MODEL) -> Path:
+def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None) -> Path:
+    base_model = resolve_base_model(base_model)
     data_config, dataset_name, train_config_paths, val_config_paths = training_data_config()
+    augment_preset_name, train_args = resolve_augment_preset(augment_preset)
     print(f"Using dataset config: {data_config}")
-    model = YOLO(f"{base_model}.pt")
+    print(f"Using base model: {base_model}")
+    print(f"Using training preset: {augment_preset_name}")
+    print(f"Training args: {json.dumps(train_args, ensure_ascii=False, sort_keys=True)}")
+    model = YOLO(model_weight_source(base_model))
     model.train(
         data=str(data_config),
-        epochs=100,
         imgsz=640,
         batch=16,
         device=0,
         project=str(ROOT / "runs" / "detect"),
         name="train",
         exist_ok=True,
+        **train_args,
     )
-    archive_path = archive_best_weights(dataset_name, data_config, train_config_paths, val_config_paths, base_model)
+    archive_path = archive_best_weights(
+        dataset_name,
+        data_config,
+        train_config_paths,
+        val_config_paths,
+        base_model,
+        augment_preset_name,
+        train_args,
+    )
     print(f"Archived best weights to {archive_path}")
     return archive_path
 

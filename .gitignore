@@ -10,3 +10,5 @@
 !/model_archieve/
 !/model_archieve/*.pt
 !/model_archieve/*.json
+
+/model_archieve_disabled/

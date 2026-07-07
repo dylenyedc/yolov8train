@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -14,7 +15,6 @@ import train
 
 
 APP = Flask(__name__)
-BASE_MODEL_CHOICES = ["yolov8n", "yolov8s", "yolov8m", "yolov8l", "yolov8x"]
 MAX_LOG_LINES = 2000
 
 STATE = {
@@ -48,6 +48,7 @@ PAGE = r"""
     label { display: block; margin: 6px 0; line-height: 1.35; }
     select, button { font: inherit; }
     select { width: 100%; padding: 8px; border: 1px solid #c7d0da; border-radius: 6px; background: white; }
+    select[multiple] { min-height: 180px; }
     button { border: 1px solid #243b53; border-radius: 6px; padding: 8px 12px; color: #fff; background: #243b53; cursor: pointer; }
     button.secondary { color: #243b53; background: #fff; }
     button:disabled { opacity: .45; cursor: not-allowed; }
@@ -56,6 +57,10 @@ PAGE = r"""
     .hint { color: #627386; font-size: 13px; }
     .runs { display: grid; gap: 12px; }
     .run { border: 1px solid #e1e7ef; border-radius: 8px; padding: 10px; background: #fbfcfd; }
+    .model-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+    .model-row { border: 1px solid #e1e7ef; border-radius: 6px; padding: 8px; background: #fbfcfd; }
+    .model-row strong { display: block; overflow-wrap: anywhere; margin-bottom: 4px; }
+    .model-row .meta { color: #627386; font-size: 12px; overflow-wrap: anywhere; margin-bottom: 8px; }
     .run-title { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
     .files { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
     .file { color: #243b53; text-decoration: none; border: 1px solid #c7d0da; border-radius: 6px; padding: 5px 7px; background: #fff; font-size: 12px; }
@@ -82,8 +87,12 @@ PAGE = r"""
     <div>
       <section>
         <h2>训练</h2>
-        <label>基础模型</label>
-        <select id="baseModel"></select>
+        <label>YOLO 家族</label>
+        <select id="modelFamily"></select>
+        <label>模型尺寸</label>
+        <select id="modelSize"></select>
+        <label>增强参数配方</label>
+        <select id="trainPreset"></select>
         <h3>训练集来源</h3>
         <div id="trainSources" class="choices"></div>
         <h3>验证集来源</h3>
@@ -93,14 +102,25 @@ PAGE = r"""
       </section>
 
       <section style="margin-top:16px">
-        <h2>测试集验证</h2>
-        <label>权重来源</label>
-        <select id="weightSelect"></select>
+        <h2>批量测试</h2>
+        <label>权重来源，可多选</label>
+        <select id="weightSelect" multiple></select>
         <h3>测试集来源</h3>
         <div id="testSources" class="choices"></div>
         <div class="row" style="margin-top:12px">
           <button id="startValidate">开始验证</button>
           <button id="refreshOptions" class="secondary">刷新选项</button>
+        </div>
+      </section>
+
+      <section style="margin-top:16px">
+        <h2>模型管理</h2>
+        <h3>有效模型</h3>
+        <div id="activeModels" class="model-list"></div>
+        <h3>停用归档区</h3>
+        <div id="disabledModels" class="model-list"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="refreshModels" class="secondary">刷新模型</button>
         </div>
       </section>
     </div>
@@ -136,6 +156,10 @@ PAGE = r"""
       return Array.from(document.querySelectorAll(`#${containerId} input:checked`)).map((item) => item.value);
     }
 
+    function selectedValues(selectId) {
+      return Array.from($(selectId).selectedOptions).map((item) => item.value);
+    }
+
     function renderChecks(containerId, options) {
       const root = $(containerId);
       root.innerHTML = "";
@@ -153,7 +177,10 @@ PAGE = r"""
     async function loadOptions() {
       const response = await fetch("/api/options");
       const data = await response.json();
-      $("baseModel").innerHTML = data.base_models.map((item) => `<option value="${item}">${item}</option>`).join("");
+      window.modelFamilies = data.model_families;
+      $("modelFamily").innerHTML = data.model_families.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      updateModelSizes();
+      $("trainPreset").innerHTML = data.training_presets.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
       renderChecks("trainSources", data.datasets);
       renderChecks("validSources", data.datasets);
       renderChecks("testSources", data.datasets);
@@ -172,18 +199,22 @@ PAGE = r"""
     }
 
     $("startTrain").onclick = () => postJson("/api/train", {
-      base_model: $("baseModel").value,
+      model_family: $("modelFamily").value,
+      model_size: $("modelSize").value,
+      augment_preset: $("trainPreset").value,
       train_sources: checkedValues("trainSources"),
       valid_sources: checkedValues("validSources"),
     });
 
     $("startValidate").onclick = () => postJson("/api/validate", {
-      weights: $("weightSelect").value,
+      weights: selectedValues("weightSelect"),
       test_sources: checkedValues("testSources"),
     });
 
     $("refreshOptions").onclick = loadOptions;
+    $("modelFamily").onchange = updateModelSizes;
     $("refreshRuns").onclick = loadRuns;
+    $("refreshModels").onclick = loadModels;
     $("stopTask").onclick = () => postJson("/api/stop", {});
     $("clearLogs").onclick = () => { $("logs").textContent = ""; };
 
@@ -192,6 +223,12 @@ PAGE = r"""
       const head = rows[0].map((cell) => `<th>${cell}</th>`).join("");
       const body = rows.slice(1).map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
       return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function updateModelSizes() {
+      const families = window.modelFamilies || [];
+      const selected = families.find((item) => item.value === $("modelFamily").value) || families[0];
+      $("modelSize").innerHTML = selected ? selected.sizes.map((item) => `<option value="${item}">${item}</option>`).join("") : "";
     }
 
     async function loadRuns() {
@@ -225,6 +262,39 @@ PAGE = r"""
       }).join("");
     }
 
+    function modelRows(models, actionLabel, action) {
+      if (!models.length) return `<div class="hint">暂无模型。</div>`;
+      return models.map((model) => `
+        <div class="model-row">
+          <strong>${model.name}</strong>
+          <div class="meta">model=${model.base_model || "?"} · preset=${model.preset || "?"} · datasets=${model.datasets || "?"} · ${model.created_at || "?"}</div>
+          <button class="secondary" onclick="${action}('${model.value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}')">${actionLabel}</button>
+        </div>
+      `).join("");
+    }
+
+    async function loadModels() {
+      const response = await fetch("/api/models");
+      const data = await response.json();
+      $("activeModels").innerHTML = modelRows(data.active, "移入停用归档区", "archiveModel");
+      $("disabledModels").innerHTML = modelRows(data.disabled, "恢复为有效模型", "restoreModel");
+    }
+
+    async function archiveModel(path) {
+      await postJson("/api/models/archive", {weights: path});
+      await loadOptions();
+      await loadModels();
+    }
+
+    async function restoreModel(path) {
+      await postJson("/api/models/restore", {weights: path});
+      await loadOptions();
+      await loadModels();
+    }
+
+    window.archiveModel = archiveModel;
+    window.restoreModel = restoreModel;
+
     async function refreshStatus() {
       const response = await fetch("/api/status");
       const data = await response.json();
@@ -239,6 +309,7 @@ PAGE = r"""
     }
 
     loadOptions();
+    loadModels();
     loadRuns();
     refreshStatus();
     setInterval(refreshStatus, 1000);
@@ -284,6 +355,27 @@ def dataset_options() -> list[dict[str, str]]:
     return options
 
 
+def training_preset_options() -> list[dict[str, str]]:
+    return [
+        {
+            "label": f"{name} | {preset['description']}",
+            "value": name,
+        }
+        for name, preset in train.AUGMENT_PRESETS.items()
+    ]
+
+
+def model_family_options() -> list[dict[str, object]]:
+    return [
+        {
+            "label": f"{family} | {config['description']}",
+            "value": family,
+            "sizes": list(config["sizes"]),
+        }
+        for family, config in train.MODEL_FAMILIES.items()
+    ]
+
+
 def archive_weight_options() -> list[dict[str, str]]:
     metadata_by_weight: dict[str, dict] = {}
     for metadata_path in train.ARCHIVE_DIR.glob("*.json"):
@@ -297,10 +389,11 @@ def archive_weight_options() -> list[dict[str, str]]:
     for weight_path in sorted(train.ARCHIVE_DIR.glob("*.pt")):
         metadata = metadata_by_weight.get(weight_path.name, {})
         base_model = metadata.get("base_model", "?")
+        preset = metadata.get("augment_preset", "?")
         train_sources = ",".join(metadata.get("train_dataset_sources") or metadata.get("dataset_sources") or [])
         valid_sources = ",".join(metadata.get("val_dataset_sources") or [])
         created_at = metadata.get("created_at", "?")
-        label = f"archieve | {weight_path.name} | model={base_model} | train={train_sources} | valid={valid_sources} | {created_at}"
+        label = f"archieve | {weight_path.name} | model={base_model} | preset={preset} | train={train_sources} | valid={valid_sources} | {created_at}"
         options.append({"label": label, "value": str(weight_path)})
 
     weights_dir = train.ROOT / "runs" / "detect" / "train" / "weights"
@@ -309,6 +402,69 @@ def archive_weight_options() -> list[dict[str, str]]:
         if path.exists():
             options.append({"label": f"lastrun | {name}", "value": str(path)})
     return options
+
+
+def metadata_for_weight(weight_path: Path, root: Path) -> list[Path]:
+    matches: list[Path] = []
+    for metadata_path in sorted(root.glob("*.json")):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if Path(metadata.get("weights", "")).name == weight_path.name:
+            matches.append(metadata_path)
+    return matches
+
+
+def metadata_by_weight(root: Path) -> dict[str, dict]:
+    metadata: dict[str, dict] = {}
+    for metadata_path in root.glob("*.json"):
+        try:
+            item = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        metadata[Path(item.get("weights", "")).name] = item
+    return metadata
+
+
+def model_records(root: Path) -> list[dict[str, str]]:
+    metadata = metadata_by_weight(root)
+    records: list[dict[str, str]] = []
+    for weight_path in sorted(root.glob("*.pt")):
+        item = metadata.get(weight_path.name, {})
+        datasets = ",".join(item.get("dataset_sources") or [item.get("dataset_name", "")])
+        records.append({
+            "name": weight_path.name,
+            "value": str(weight_path.resolve()),
+            "base_model": str(item.get("base_model", "")),
+            "preset": str(item.get("augment_preset", "")),
+            "datasets": datasets,
+            "created_at": str(item.get("created_at", "")),
+        })
+    return records
+
+
+def resolve_model_path(raw_path: str, root: Path) -> Path:
+    base = root.resolve()
+    target = Path(raw_path).expanduser()
+    if not target.is_absolute():
+        target = base / target
+    target = target.resolve()
+    if not target.is_file() or base not in target.parents or target.suffix != ".pt":
+        raise FileNotFoundError(f"模型不存在或不在允许目录中: {raw_path}")
+    return target
+
+
+def move_model_files(weight_path: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source_dir = weight_path.parent
+    related = [weight_path] + metadata_for_weight(weight_path, source_dir)
+    for source in related:
+        target = target_dir / source.name
+        if target.exists():
+            raise FileExistsError(f"目标已存在: {target}")
+    for source in related:
+        shutil.move(str(source), str(target_dir / source.name))
 
 
 def run_file_url(path: Path) -> str:
@@ -334,6 +490,7 @@ def run_summaries() -> list[dict]:
         "args.yaml",
         "results.csv",
         "results.png",
+        "comparison_curves.png",
         "confusion_matrix.png",
         "confusion_matrix_normalized.png",
         "BoxPR_curve.png",
@@ -359,6 +516,7 @@ def run_summaries() -> list[dict]:
             path for path in files
             if path.name in {
                 "results.png",
+                "comparison_curves.png",
                 "confusion_matrix.png",
                 "confusion_matrix_normalized.png",
                 "BoxPR_curve.png",
@@ -475,7 +633,8 @@ def index():
 @APP.get("/api/options")
 def api_options():
     return jsonify({
-        "base_models": BASE_MODEL_CHOICES,
+        "model_families": model_family_options(),
+        "training_presets": training_preset_options(),
         "datasets": dataset_options(),
         "weights": archive_weight_options(),
     })
@@ -498,6 +657,36 @@ def api_runs():
     return jsonify({"runs": run_summaries()})
 
 
+@APP.get("/api/models")
+def api_models():
+    return jsonify({
+        "active": model_records(train.ARCHIVE_DIR),
+        "disabled": model_records(train.DISABLED_ARCHIVE_DIR),
+    })
+
+
+@APP.post("/api/models/archive")
+def api_archive_model():
+    payload = request.get_json(force=True)
+    try:
+        weight_path = resolve_model_path(payload.get("weights", ""), train.ARCHIVE_DIR)
+        move_model_files(weight_path, train.DISABLED_ARCHIVE_DIR)
+    except (FileNotFoundError, FileExistsError) as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"ok": True})
+
+
+@APP.post("/api/models/restore")
+def api_restore_model():
+    payload = request.get_json(force=True)
+    try:
+        weight_path = resolve_model_path(payload.get("weights", ""), train.DISABLED_ARCHIVE_DIR)
+        move_model_files(weight_path, train.ARCHIVE_DIR)
+    except (FileNotFoundError, FileExistsError) as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"ok": True})
+
+
 @APP.get("/run-file/<path:relative_path>")
 def run_file(relative_path: str):
     runs_root = (train.ROOT / "runs").resolve()
@@ -510,17 +699,35 @@ def run_file(relative_path: str):
 @APP.post("/api/train")
 def api_train():
     payload = request.get_json(force=True)
-    base_model = payload.get("base_model") or train.BASE_MODEL
+    if payload.get("model_family"):
+        try:
+            base_model = train.resolve_base_model(payload.get("model_family"), payload.get("model_size"))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+    else:
+        base_model = train.resolve_base_model(payload.get("base_model") or train.BASE_MODEL)
+    augment_preset = payload.get("augment_preset") or train.DEFAULT_AUGMENT_PRESET
     train_sources = payload.get("train_sources") or []
     valid_sources = payload.get("valid_sources") or []
     if not train_sources or not valid_sources:
         return jsonify({"error": "训练集和验证集都至少选择一个来源"}), 400
-    code = "import os, train; train.run_training(os.environ.get('YOLO_BASE_MODEL', train.BASE_MODEL))"
+    try:
+        train.resolve_augment_preset(augment_preset)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    code = (
+        "import os, train\n"
+        "train.run_training("
+        "os.environ.get('YOLO_BASE_MODEL', train.BASE_MODEL), "
+        "os.environ.get(train.TRAIN_PRESET_ENV, train.DEFAULT_AUGMENT_PRESET)"
+        ")\n"
+    )
     ok, error = start_process(
         "train",
         [sys.executable, "-c", code],
         {
             "YOLO_BASE_MODEL": base_model,
+            train.TRAIN_PRESET_ENV: augment_preset,
             train.TRAIN_DATASET_ENV: os.pathsep.join(train_sources),
             train.VALID_DATASET_ENV: os.pathsep.join(valid_sources),
         },
@@ -533,28 +740,28 @@ def api_train():
 @APP.post("/api/validate")
 def api_validate():
     payload = request.get_json(force=True)
-    weights = payload.get("weights")
+    weights = payload.get("weights") or []
     test_sources = payload.get("test_sources") or []
+    if isinstance(weights, str):
+        weights = [weights]
     if not weights:
-        return jsonify({"error": "请选择权重"}), 400
+        return jsonify({"error": "至少选择一个权重"}), 400
     if not test_sources:
         return jsonify({"error": "测试集至少选择一个来源"}), 400
     code = (
         "import os, train\n"
-        "from ultralytics import YOLO\n"
-        "cfg, name, _ = train.testing_data_config()\n"
-        "weights = os.environ['YOLO_VALIDATE_WEIGHTS']\n"
-        "print(f'Validate weights: {weights}')\n"
-        "print(f'Test config: {cfg}')\n"
-        "print(f'Test name: {name}')\n"
-        "YOLO(weights).val(data=str(cfg), split='test', device=0, "
-        "project=str(train.ROOT / 'runs' / 'detect'), name='test', exist_ok=True)\n"
+        "from pathlib import Path\n"
+        "weights = [Path(item) for item in os.environ['YOLO_VALIDATE_WEIGHTS'].split(os.pathsep) if item]\n"
+        "print('Test weights:')\n"
+        "for item in weights:\n"
+        "    print(f'- {item}')\n"
+        "train.run_batch_testing(weights)\n"
     )
     ok, error = start_process(
-        "validate",
+        "batch_test",
         [sys.executable, "-c", code],
         {
-            "YOLO_VALIDATE_WEIGHTS": weights,
+            "YOLO_VALIDATE_WEIGHTS": os.pathsep.join(weights),
             train.TEST_DATASET_ENV: os.pathsep.join(test_sources),
         },
     )
@@ -564,7 +771,7 @@ def api_validate():
 
 
 def main() -> None:
-    APP.run(host="127.0.0.1", port=7860, debug=False, threaded=True)
+    APP.run(host="0.0.0.0", port=7860, debug=False, threaded=True)
 
 
 if __name__ == "__main__":

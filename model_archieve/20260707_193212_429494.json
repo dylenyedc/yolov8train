@@ -1,0 +1,71 @@
+{
+  "created_at": "2026-07-07T19:32:12.429494",
+  "base_model": "yolov8s",
+  "augment_preset": "official_default",
+  "train_args": {
+    "epochs": 100,
+    "patience": 100,
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 0.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "perspective": 0.0,
+    "fliplr": 0.5,
+    "mosaic": 1.0,
+    "mixup": 0.0,
+    "close_mosaic": 10
+  },
+  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/yolov8s_20260707_193212_train_findtopfullbusket_valid_findtopfullbusket_official_default.pt",
+  "source_weights": "/home/cqu-996/vscodews/yolov8train/runs/detect/train/weights/best.pt",
+  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_findtopfullbusket_valid_findtopfullbusket.yaml",
+  "is_mixed_dataset": false,
+  "is_cross_validation": false,
+  "dataset_name": "train_findtopfullbusket_valid_findtopfullbusket",
+  "dataset_sources": [
+    "findtopfullbusket"
+  ],
+  "train_dataset_sources": [
+    "findtopfullbusket"
+  ],
+  "val_dataset_sources": [
+    "findtopfullbusket"
+  ],
+  "train_datasets": [
+    {
+      "dataset_name": "findtopfullbusket",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket/data.yaml",
+      "class_names": [
+        "test-markfull-busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "test_markfull_busket",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/test_markfull_busket/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ],
+  "val_datasets": [
+    {
+      "dataset_name": "findtopfullbusket",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket/data.yaml",
+      "class_names": [
+        "test-markfull-busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "test_markfull_busket",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/test_markfull_busket/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ]
+}
