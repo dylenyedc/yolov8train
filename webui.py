@@ -160,7 +160,7 @@ PAGE = r"""
       return Array.from($(selectId).selectedOptions).map((item) => item.value);
     }
 
-    function renderChecks(containerId, options) {
+    function renderChecks(containerId, options, withSamples=false) {
       const root = $(containerId);
       root.innerHTML = "";
       options.forEach((option) => {
@@ -170,18 +170,42 @@ PAGE = r"""
         input.value = option.value;
         label.appendChild(input);
         label.append(" " + option.label);
+        if (withSamples) {
+          const select = document.createElement("select");
+          select.dataset.sampleFor = option.value;
+          select.style.width = "88px";
+          select.style.marginLeft = "8px";
+          (window.sampleChoices || [1]).forEach((value) => {
+            const choice = document.createElement("option");
+            choice.value = String(value);
+            choice.textContent = `${value}x`;
+            if (Number(value) === 1) choice.selected = true;
+            select.appendChild(choice);
+          });
+          label.appendChild(select);
+        }
         root.appendChild(label);
       });
+    }
+
+    function checkedSampleMultipliers(containerId) {
+      const payload = {};
+      Array.from(document.querySelectorAll(`#${containerId} input:checked`)).forEach((input) => {
+        const select = document.querySelector(`#${containerId} select[data-sample-for="${CSS.escape(input.value)}"]`);
+        if (select) payload[input.value.replaceAll("@", "_")] = Number(select.value);
+      });
+      return payload;
     }
 
     async function loadOptions() {
       const response = await fetch("/api/options");
       const data = await response.json();
       window.modelFamilies = data.model_families;
+      window.sampleChoices = data.sample_choices;
       $("modelFamily").innerHTML = data.model_families.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
       updateModelSizes();
       $("trainPreset").innerHTML = data.training_presets.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
-      renderChecks("trainSources", data.datasets);
+      renderChecks("trainSources", data.datasets, true);
       renderChecks("validSources", data.datasets);
       renderChecks("testSources", data.datasets);
       $("weightSelect").innerHTML = data.weights.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
@@ -203,6 +227,7 @@ PAGE = r"""
       model_size: $("modelSize").value,
       augment_preset: $("trainPreset").value,
       train_sources: checkedValues("trainSources"),
+      train_sample_multipliers: checkedSampleMultipliers("trainSources"),
       valid_sources: checkedValues("validSources"),
     });
 
@@ -525,8 +550,20 @@ def run_summaries() -> list[dict]:
                 "BoxR_curve.png",
             }
         ]
-        other_images = sorted(image_files, key=lambda p: p.stat().st_mtime, reverse=True)[:8]
-        images = list(dict.fromkeys(preferred_images + other_images))
+        watch_images = [
+            path for path in image_files
+            if "watch" in path.relative_to(run_dir).parts
+        ]
+        batch_images = [
+            path for path in image_files
+            if path.name.startswith("val_batch")
+        ]
+        other_images = sorted(
+            [path for path in image_files if path not in watch_images and path not in batch_images],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:8]
+        images = list(dict.fromkeys(preferred_images + sorted(watch_images)[:80] + sorted(batch_images)[:12] + other_images))
         results_csv = run_dir / "results.csv"
         summaries.append({
             "name": run_dir.relative_to(runs_root).as_posix(),
@@ -635,6 +672,7 @@ def api_options():
     return jsonify({
         "model_families": model_family_options(),
         "training_presets": training_preset_options(),
+        "sample_choices": train.sample_choice_options(),
         "datasets": dataset_options(),
         "weights": archive_weight_options(),
     })
@@ -709,6 +747,7 @@ def api_train():
     augment_preset = payload.get("augment_preset") or train.DEFAULT_AUGMENT_PRESET
     train_sources = payload.get("train_sources") or []
     valid_sources = payload.get("valid_sources") or []
+    sample_multipliers = payload.get("train_sample_multipliers") or {}
     if not train_sources or not valid_sources:
         return jsonify({"error": "训练集和验证集都至少选择一个来源"}), 400
     try:
@@ -730,6 +769,7 @@ def api_train():
             train.TRAIN_PRESET_ENV: augment_preset,
             train.TRAIN_DATASET_ENV: os.pathsep.join(train_sources),
             train.VALID_DATASET_ENV: os.pathsep.join(valid_sources),
+            train.TRAIN_SAMPLE_ENV: json.dumps(sample_multipliers),
         },
     )
     if not ok:

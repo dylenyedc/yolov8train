@@ -30,11 +30,12 @@ def draw_menu(
     cursor: int,
     selected: set[int] | None = None,
     selectable_count: int | None = None,
+    help_text: str | None = None,
 ) -> None:
     stdscr.clear()
     height, width = stdscr.getmaxyx()
     stdscr.addstr(0, 0, title)
-    stdscr.addstr(1, 0, "↑/↓ 移动，Enter 确认/勾选，q 退出")
+    stdscr.addstr(1, 0, help_text or "↑/↓ 移动，Enter 确认/勾选，q 退出")
     visible_rows = max(1, height - 3)
     start = max(0, min(cursor - visible_rows + 1, max(0, len(options) - visible_rows)))
     selectable_count = len(options) if selectable_count is None else selectable_count
@@ -52,11 +53,39 @@ def draw_menu(
     stdscr.refresh()
 
 
-def choose_one(stdscr, title: str, options: list[str], allow_back: bool = True) -> str | None:
+def show_detail(stdscr, title: str, text: str) -> None:
+    lines = text.splitlines() or ["无详情"]
+    cursor = 0
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        stdscr.addstr(0, 0, title[: max(1, width - 1)])
+        stdscr.addstr(1, 0, "↑/↓ 滚动，Enter/Esc 返回")
+        visible_rows = max(1, height - 3)
+        cursor = max(0, min(cursor, max(0, len(lines) - visible_rows)))
+        for row, index in enumerate(range(cursor, min(len(lines), cursor + visible_rows)), start=3):
+            stdscr.addstr(row, 0, lines[index][: max(1, width - 1)])
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            cursor = max(0, cursor - 1)
+        elif key == curses.KEY_DOWN:
+            cursor = min(max(0, len(lines) - visible_rows), cursor + 1)
+        elif key in (curses.KEY_ENTER, 10, 13, 27):
+            return
+
+
+def choose_one(
+    stdscr,
+    title: str,
+    options: list[str],
+    allow_back: bool = True,
+    details: dict[str, str] | None = None,
+) -> str | None:
     cursor = 0
     display_options = options + ([BACK_OPTION] if allow_back else [])
     while True:
-        draw_menu(stdscr, title, display_options, cursor)
+        draw_menu(stdscr, title, display_options, cursor, help_text="↑/↓ 移动，Enter 确认，d 详情，q 退出")
         key = stdscr.getch()
         if key in (ord("q"), 27):
             raise KeyboardInterrupt
@@ -68,16 +97,33 @@ def choose_one(stdscr, title: str, options: list[str], allow_back: bool = True) 
             if allow_back and cursor == len(display_options) - 1:
                 return None
             return display_options[cursor]
+        elif key == ord("d") and cursor < len(options) and details:
+            show_detail(stdscr, "详情", details.get(display_options[cursor], "无详情"))
 
 
-def choose_many(stdscr, title: str, options: list[str], allow_back: bool = True) -> list[str] | None:
+def choose_many(
+    stdscr,
+    title: str,
+    options: list[str],
+    allow_back: bool = True,
+    details: dict[str, str] | None = None,
+    adjust=None,
+) -> list[str] | None:
     cursor = 0
     selected: set[int] = set()
     display_options = options + [NEXT_OPTION] + ([BACK_OPTION] if allow_back else [])
     next_index = len(options)
     back_index = len(display_options) - 1 if allow_back else None
     while True:
-        draw_menu(stdscr, title, display_options, cursor, selected, selectable_count=len(options))
+        draw_menu(
+            stdscr,
+            title,
+            display_options,
+            cursor,
+            selected,
+            selectable_count=len(options),
+            help_text="↑/↓ 移动，Enter 勾选，+/- 调倍率，d 详情，下一步继续",
+        )
         key = stdscr.getch()
         if key in (ord("q"), 27):
             raise KeyboardInterrupt
@@ -96,6 +142,13 @@ def choose_many(stdscr, title: str, options: list[str], allow_back: bool = True)
                 selected.remove(cursor)
             else:
                 selected.add(cursor)
+        elif key == ord("d") and cursor < len(options) and details:
+            show_detail(stdscr, "详情", details.get(display_options[cursor], "无详情"))
+        elif key in (ord("+"), ord("="), ord("-"), ord("_")) and cursor < len(options) and adjust:
+            new_label = adjust(display_options[cursor], 1 if key in (ord("+"), ord("=")) else -1)
+            if new_label and new_label != display_options[cursor]:
+                options[cursor] = new_label
+                display_options[cursor] = new_label
 
 
 def dataset_last_updated(dataset_dir: Path) -> str:
@@ -116,6 +169,44 @@ def dataset_choices() -> list[tuple[str, str]]:
             golden_label = f"{name}/{train.GOLDEN_SPLIT} | updated {dataset_last_updated(golden_dir.parent)}"
             choices.append((golden_label, f"{name}@{train.GOLDEN_SPLIT}"))
     return choices
+
+
+def dataset_detail(value: str) -> str:
+    config_path, explicit_split = train.parse_dataset_sources(value, "interactive")[0]
+    metadata = train.dataset_metadata(config_path)
+    lines = [
+        f"名称: {value}",
+        f"目录: {config_path.parent}",
+        f"配置: {config_path}",
+        f"版本: {metadata.get('version') or 'unknown'}",
+        f"类别: {metadata.get('class_names')}",
+    ]
+    for split in ["train", "val", "valid", "test", train.GOLDEN_SPLIT]:
+        try:
+            split_path = train.resolve_split(config_path, train.load_yaml(config_path), split)
+        except Exception as error:
+            lines.append(f"{split}: error {error}")
+            continue
+        if split_path and split_path.exists():
+            image_count = len([path for path in split_path.rglob("*") if path.suffix.lower() in train.IMAGE_SUFFIXES])
+            mark = " <- 当前特殊子集" if explicit_split == split else ""
+            lines.append(f"{split}: {split_path} ({image_count} images){mark}")
+    roboflow = metadata.get("roboflow") or {}
+    if roboflow:
+        lines.append("roboflow:")
+        lines.extend(f"  {key}: {value}" for key, value in roboflow.items())
+    return "\n".join(lines)
+
+
+def model_detail(weight_path: Path) -> str:
+    metadata_paths = metadata_for_weight(weight_path, weight_path.parent)
+    if not metadata_paths:
+        return f"权重: {weight_path}\n元数据: 未找到"
+    try:
+        metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        return f"权重: {weight_path}\n元数据读取失败: {error}"
+    return json.dumps(metadata, ensure_ascii=False, indent=2)
 
 
 def archive_options() -> list[tuple[str, Path]]:
@@ -205,25 +296,67 @@ def validate_weights(weight_paths: list[Path]) -> None:
 def choose_dataset_names(stdscr, title: str) -> list[str] | None:
     choices = dataset_choices()
     labels = [label for label, _ in choices]
-    selected_labels = choose_many(stdscr, title, labels)
+    details = {label: dataset_detail(value) for label, value in choices}
+    selected_labels = choose_many(stdscr, title, labels, details=details)
     if selected_labels is None:
         return None
     name_by_label = dict(choices)
     return [name_by_label[label] for label in selected_labels]
 
 
-def choose_training_datasets(stdscr) -> tuple[list[str], list[str], Path, str] | None:
+def multiplier_label(label: str, multiplier: float) -> str:
+    return f"{label} | train x{multiplier:g}"
+
+
+def choose_train_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str, float]] | None:
+    choices = dataset_choices()
+    values = [value for _, value in choices]
+    base_labels = {value: label for label, value in choices}
+    multipliers = {value: 1.0 for value in values}
+
+    def current_labels() -> list[str]:
+        return [multiplier_label(base_labels[value], multipliers[value]) for value in values]
+
+    labels = current_labels()
+    value_by_label = {label: value for label, value in zip(labels, values)}
+    details = {label: dataset_detail(value) for label, value in value_by_label.items()}
+
+    def adjust(label: str, direction: int) -> str:
+        value = value_by_label[label]
+        choices = train.sample_choice_options()
+        index = min(range(len(choices)), key=lambda i: abs(choices[i] - multipliers[value]))
+        index = max(0, min(len(choices) - 1, index + direction))
+        multipliers[value] = choices[index]
+        new_label = multiplier_label(base_labels[value], multipliers[value])
+        value_by_label[new_label] = value
+        details[new_label] = dataset_detail(value)
+        return new_label
+
+    selected_labels = choose_many(stdscr, title, labels, details=details, adjust=adjust)
+    if selected_labels is None:
+        return None
+    selected_values = [value_by_label[label] for label in selected_labels]
+    selected_multipliers = {
+        train.source_name(train.parse_dataset_sources(value, "interactive")[0], "train"): multipliers[value]
+        for value in selected_values
+    }
+    return selected_values, selected_multipliers
+
+
+def choose_training_datasets(stdscr) -> tuple[list[str], list[str], Path, str, dict[str, float]] | None:
     while True:
-        train_datasets = choose_dataset_names(stdscr, "选择训练集来源")
-        if train_datasets is None:
+        train_selection = choose_train_dataset_names(stdscr, "选择训练集来源")
+        if train_selection is None:
             return None
+        train_datasets, sample_multipliers = train_selection
         val_datasets = choose_dataset_names(stdscr, "选择验证集来源")
         if val_datasets is None:
             continue
         os.environ[train.TRAIN_DATASET_ENV] = os.pathsep.join(train_datasets)
         os.environ[train.VALID_DATASET_ENV] = os.pathsep.join(val_datasets)
-        data_config, dataset_name, _, _ = train.training_data_config()
-        return train_datasets, val_datasets, data_config, dataset_name
+        os.environ[train.TRAIN_SAMPLE_ENV] = json.dumps(sample_multipliers)
+        data_config, dataset_name, _, _, _ = train.training_data_config()
+        return train_datasets, val_datasets, data_config, dataset_name, sample_multipliers
 
 
 def choose_test_datasets(stdscr) -> tuple[list[str], Path, str] | None:
@@ -266,7 +399,7 @@ def training_menu(stdscr) -> None:
         selected = choose_training_datasets(stdscr)
         if selected is None:
             continue
-        train_datasets, val_datasets, data_config, dataset_name = selected
+        train_datasets, val_datasets, data_config, dataset_name, sample_multipliers = selected
 
         def train_action() -> None:
             print(f"Model family: {model_family}")
@@ -274,6 +407,7 @@ def training_menu(stdscr) -> None:
             print(f"Base model: {base_model}")
             print(f"Augment preset: {augment_preset}")
             print(f"Train datasets: {', '.join(train_datasets)}")
+            print(f"Train sample multipliers: {json.dumps(sample_multipliers, ensure_ascii=False, sort_keys=True)}")
             print(f"Valid datasets: {', '.join(val_datasets)}")
             print(f"Dataset name: {dataset_name}")
             print(f"Dataset config: {data_config}")
@@ -292,10 +426,12 @@ def weight_paths_menu(stdscr) -> list[Path] | None:
             choices = archive_options()
             if not choices:
                 raise FileNotFoundError("model_archieve 中没有可用权重")
-            labels = choose_many(stdscr, "测试 / 选择一个或多个归档权重", [item[0] for item in choices])
+            details = {label: model_detail(path) for label, path in choices}
+            labels = choose_many(stdscr, "测试 / 选择一个或多个归档权重", [item[0] for item in choices], details=details)
         else:
             choices = lastrun_options()
-            labels = choose_many(stdscr, "测试 / 选择一个或多个最近训练权重", [item[0] for item in choices])
+            details = {label: f"权重: {path}\n存在: {path.exists()}" for label, path in choices}
+            labels = choose_many(stdscr, "测试 / 选择一个或多个最近训练权重", [item[0] for item in choices], details=details)
         if labels is None:
             continue
         return [dict(choices)[label] for label in labels]
@@ -333,7 +469,8 @@ def model_management_menu(stdscr) -> None:
             choices = active_model_options()
             if not choices:
                 continue
-            labels = choose_many(stdscr, "选择要停用的模型", [item[0] for item in choices])
+            details = {label: model_detail(path) for label, path in choices}
+            labels = choose_many(stdscr, "选择要停用的模型", [item[0] for item in choices], details=details)
             if labels is None:
                 continue
             paths = [dict(choices)[label] for label in labels]
@@ -348,7 +485,8 @@ def model_management_menu(stdscr) -> None:
             choices = disabled_model_options()
             if not choices:
                 continue
-            labels = choose_many(stdscr, "选择要恢复的模型", [item[0] for item in choices])
+            details = {label: model_detail(path) for label, path in choices}
+            labels = choose_many(stdscr, "选择要恢复的模型", [item[0] for item in choices], details=details)
             if labels is None:
                 continue
             paths = [dict(choices)[label] for label in labels]

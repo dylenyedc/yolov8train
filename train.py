@@ -1,10 +1,12 @@
 import json
 import os
+import random
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
+from faker import Faker
 import matplotlib
 
 matplotlib.use("Agg")
@@ -51,8 +53,23 @@ VAL_DATASET_ENV = "YOLO_VAL_DATASET_PATH"
 VALID_DATASET_ENV = "YOLO_VALID_DATASET_PATH"
 TEST_DATASET_ENV = "YOLO_TEST_DATASET_PATH"
 TRAIN_PRESET_ENV = "YOLO_TRAIN_PRESET"
+TRAIN_SAMPLE_ENV = "YOLO_TRAIN_SAMPLE_MULTIPLIERS"
 MIXED_DATASET_CLASS_NAME = "busket"
 GOLDEN_SPLIT = "golden"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+WATCH_IMAGES_PER_SOURCE = 24
+TRAIN_SAMPLE_CHOICES = [0.1, 0.2, 0.25, 0.33, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 7.5, 10.0]
+FAKER = Faker("en_US")
+MODEL_ADJECTIVES = [
+    "agile", "amber", "brave", "bright", "calm", "clever", "crisp", "eager",
+    "fierce", "fresh", "golden", "keen", "lucky", "nimble", "prime", "rapid",
+    "royal", "sharp", "silent", "steady", "swift", "vivid", "wise", "zesty",
+]
+MODEL_NOUNS = [
+    "anchor", "beacon", "comet", "copper", "delta", "ember", "harbor", "iris",
+    "kernel", "lantern", "matrix", "needle", "orbit", "pixel", "quartz",
+    "rocket", "signal", "summit", "vertex", "voyage",
+]
 MODEL_COLORS = [
     (36, 99, 235),
     (220, 38, 38),
@@ -144,6 +161,37 @@ def safe_name(value: object) -> str:
     text = str(value or "dataset").strip()
     text = re.sub(r"[^0-9A-Za-z._-]+", "_", text)
     return text.strip("._-") or "dataset"
+
+
+def compact_model_name(base_model: str) -> str:
+    name = safe_name(base_model)
+    for prefix in ["yolov", "yolo"]:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def sample_choice_options() -> list[float]:
+    return list(TRAIN_SAMPLE_CHOICES)
+
+
+def clamp_sample_multiplier(value: object) -> float:
+    number = float(value)
+    if number <= 0:
+        raise ValueError("训练集倍率必须大于 0")
+    if number < TRAIN_SAMPLE_CHOICES[0] or number > TRAIN_SAMPLE_CHOICES[-1]:
+        raise ValueError(f"训练集倍率必须在 {TRAIN_SAMPLE_CHOICES[0]} 到 {TRAIN_SAMPLE_CHOICES[-1]} 之间")
+    return number
+
+
+def format_multiplier(value: float) -> str:
+    return f"{value:g}x"
+
+
+def memorable_model_words() -> str:
+    adjective = FAKER.random_element(MODEL_ADJECTIVES)
+    noun = FAKER.random_element(MODEL_NOUNS)
+    return safe_name(f"{adjective}_{noun}").lower()
 
 
 def model_family_options() -> list[str]:
@@ -382,6 +430,125 @@ def source_split_paths(sources: list[tuple[Path, str | None]], default_split: st
     return paths
 
 
+def source_image_groups(
+    sources: list[tuple[Path, str | None]],
+    default_split: str,
+    limit: int | None = None,
+) -> list[tuple[str, list[Path]]]:
+    groups: list[tuple[str, list[Path]]] = []
+    for source in sources:
+        image_dir = Path(source_split_paths([source], default_split)[0])
+        images = sorted(path.resolve() for path in image_dir.rglob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
+        if limit is not None:
+            images = images[:limit]
+        groups.append((source_name(source, default_split), images))
+    return groups
+
+
+def image_paths_for_source(source: tuple[Path, str | None], default_split: str) -> list[Path]:
+    image_dir = Path(source_split_paths([source], default_split)[0])
+    return sorted(path.resolve() for path in image_dir.rglob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
+
+
+def parse_train_sample_multipliers(value: str | None, sources: list[tuple[Path, str | None]]) -> dict[str, float]:
+    keys = {source_name(source, "train") for source in sources}
+    multipliers = {key: 1.0 for key in keys}
+    if not value:
+        return multipliers
+
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        payload = {}
+        for item in value.split(","):
+            if not item.strip():
+                continue
+            key, raw_multiplier = item.split("=", 1)
+            payload[key.strip()] = raw_multiplier.strip()
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"{TRAIN_SAMPLE_ENV} must be a JSON object or key=value list")
+
+    for key, raw_multiplier in payload.items():
+        safe_key = safe_name(key)
+        if safe_key in multipliers:
+            multipliers[safe_key] = clamp_sample_multiplier(raw_multiplier)
+    return multipliers
+
+
+def source_sample_multiplier(source: tuple[Path, str | None], multipliers: dict[str, float] | None) -> float:
+    if not multipliers:
+        return 1.0
+    return multipliers.get(source_name(source, "train"), 1.0)
+
+
+def sampled_images(images: list[Path], multiplier: float, seed_key: str) -> list[Path]:
+    if not images:
+        return []
+    rng = random.Random(seed_key)
+    shuffled = images[:]
+    rng.shuffle(shuffled)
+    if multiplier < 1:
+        sample_count = max(1, round(len(images) * multiplier))
+        return shuffled[:sample_count]
+
+    full_repeats = int(multiplier)
+    fraction = multiplier - full_repeats
+    selected = images * full_repeats
+    if fraction > 0:
+        extra_count = round(len(images) * fraction)
+        selected.extend(shuffled[:extra_count])
+    return selected
+
+
+def materialize_train_sources(
+    train_sources: list[tuple[Path, str | None]],
+    multipliers: dict[str, float] | None = None,
+) -> tuple[list[str], list[dict]]:
+    paths: list[str] = []
+    sample_info: list[dict] = []
+    sampled_lines: list[str] = []
+    uses_sampling = False
+
+    for source in train_sources:
+        label = source_name(source, "train")
+        multiplier = source_sample_multiplier(source, multipliers)
+        images = image_paths_for_source(source, "train")
+        effective_images = sampled_images(images, multiplier, f"{label}:{multiplier}")
+        if multiplier != 1.0:
+            uses_sampling = True
+        sample_info.append({
+            "source": label,
+            "multiplier": multiplier,
+            "original_image_count": len(images),
+            "effective_image_count": len(effective_images),
+        })
+        sampled_lines.extend(str(path) for path in effective_images)
+        if multiplier == 1.0:
+            paths.extend(source_split_paths([source], "train"))
+
+    if not uses_sampling:
+        return paths, sample_info
+
+    output_name = safe_name(
+        "sampled_train_"
+        + "_".join(f"{item['source']}_{format_multiplier(item['multiplier'])}" for item in sample_info)
+    )
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = GENERATED_DIR / f"{output_name}.txt"
+    with output_path.open("w", encoding="utf-8") as file:
+        file.write("\n".join(sampled_lines))
+        file.write("\n")
+    return [str(output_path)], sample_info
+
+
+def dominant_train_source(sample_info: list[dict], fallback: str = "dataset") -> str:
+    if not sample_info:
+        return safe_name(fallback)
+    dominant = max(sample_info, key=lambda item: item.get("effective_image_count", 0))
+    return safe_name(dominant.get("source") or fallback)
+
+
 def optional_split_paths(config_paths: list[Path], split: str) -> list[str]:
     paths: list[str] = []
     for config_path in config_paths:
@@ -395,14 +562,16 @@ def optional_split_paths(config_paths: list[Path], split: str) -> list[str]:
 def cross_validation_dataset_config(
     train_sources: list[tuple[Path, str | None]],
     val_sources: list[tuple[Path, str | None]],
-) -> Path:
+    train_multipliers: dict[str, float] | None = None,
+) -> tuple[Path, list[dict]]:
     train_name = safe_name("_".join(source_names(train_sources, "train")))
     val_name = safe_name("_".join(source_names(val_sources, "val")))
     output_name = safe_name(f"cross_{train_name}_valid_{val_name}")
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"{output_name}.yaml"
+    train_paths, sample_info = materialize_train_sources(train_sources, train_multipliers)
     output = {
-        "train": source_split_paths(train_sources, "train"),
+        "train": train_paths,
         "val": source_split_paths(val_sources, "val"),
         "nc": 1,
         "names": [MIXED_DATASET_CLASS_NAME],
@@ -413,7 +582,7 @@ def cross_validation_dataset_config(
         output["test"] = test_paths
     with output_path.open("w", encoding="utf-8") as file:
         yaml.safe_dump(output, file, sort_keys=False, allow_unicode=True)
-    return output_path
+    return output_path, sample_info
 
 
 def test_dataset_config(test_sources: list[tuple[Path, str | None]]) -> tuple[Path, str, list[tuple[Path, str | None]]]:
@@ -520,6 +689,43 @@ def write_batch_metric_curves(results: list[dict], output_dir: Path) -> None:
         json.dump(results, file, ensure_ascii=False, indent=2)
 
 
+def write_watch_predictions(
+    weight_paths: list[Path],
+    test_sources: list[tuple[Path, str | None]],
+    output_dir: Path,
+    max_images_per_source: int = WATCH_IMAGES_PER_SOURCE,
+) -> None:
+    groups = source_image_groups(test_sources, "test", limit=max_images_per_source)
+    watch_root = output_dir / "watch"
+    watch_root.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for source_label, image_paths in groups:
+        if not image_paths:
+            print(f"Watch skip empty test source: {source_label}")
+            continue
+        print(f"Writing watch predictions for {source_label}: {len(image_paths)} images")
+        source_dir = watch_root / safe_name(source_label)
+        for index, weight_path in enumerate(weight_paths, start=1):
+            model_name = f"{index:02d}_{safe_name(weight_path.stem)}"
+            YOLO(str(weight_path)).predict(
+                source=[str(path) for path in image_paths],
+                device=0,
+                project=str(source_dir),
+                name=model_name,
+                exist_ok=True,
+                save=True,
+                verbose=False,
+            )
+            manifest.append({
+                "source": source_label,
+                "model": weight_path.name,
+                "output_dir": str(source_dir / model_name),
+                "image_count": len(image_paths),
+            })
+    with (watch_root / "manifest.json").open("w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2)
+
+
 def run_batch_testing(weight_paths: list[Path]) -> Path:
     if not weight_paths:
         raise ValueError("至少需要选择一个权重")
@@ -528,7 +734,7 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
     if missing_weights:
         raise FileNotFoundError(f"权重不存在: {missing_weights[0]}")
 
-    test_config, test_name, _ = testing_data_config()
+    test_config, test_name, test_sources = testing_data_config()
     now = datetime.now()
     output_dir = ROOT / "runs" / "detect" / f"batch_test_{now:%Y%m%d_%H%M%S}_{test_name}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -552,28 +758,42 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
 
     print("Writing comparison curves...")
     write_batch_metric_curves(batch_results, output_dir)
+    print("Writing per-source watch predictions...")
+    write_watch_predictions(resolved_weights, test_sources, output_dir)
     print(f"Batch testing finished: {output_dir}")
     return output_dir
 
 
-def training_data_config() -> tuple[Path, str, list[Path], list[Path]]:
+def training_data_config() -> tuple[Path, str, list[Path], list[Path], list[dict]]:
     train_value = os.environ.get(TRAIN_DATASET_ENV)
     val_value = os.environ.get(VALID_DATASET_ENV) or os.environ.get(VAL_DATASET_ENV)
     if train_value is not None or val_value is not None:
         train_sources = parse_dataset_sources(train_value or str(DEFAULT_DATASET), TRAIN_DATASET_ENV)
         val_sources = parse_dataset_sources(val_value or train_value or str(DEFAULT_DATASET), VAL_DATASET_ENV)
+        train_multipliers = parse_train_sample_multipliers(os.environ.get(TRAIN_SAMPLE_ENV), train_sources)
         train_paths = list(dict.fromkeys(config_path for config_path, _ in train_sources))
         val_paths = list(dict.fromkeys(config_path for config_path, _ in val_sources))
         dataset_name = safe_name(
             f"train_{'_'.join(source_names(train_sources, 'train'))}"
             f"_valid_{'_'.join(source_names(val_sources, 'val'))}"
         )
-        return cross_validation_dataset_config(train_sources, val_sources), dataset_name, train_paths, val_paths
+        data_config, sample_info = cross_validation_dataset_config(train_sources, val_sources, train_multipliers)
+        return data_config, dataset_name, train_paths, val_paths, sample_info
 
     config_paths = selected_dataset_configs()
+    train_sources = [(path, None) for path in config_paths]
+    sample_info = [
+        {
+            "source": dataset_id(path),
+            "multiplier": 1.0,
+            "original_image_count": len(image_paths_for_source((path, None), "train")),
+            "effective_image_count": len(image_paths_for_source((path, None), "train")),
+        }
+        for path in config_paths
+    ]
     if len(config_paths) == 1:
-        return config_paths[0], dataset_id(config_paths[0]), config_paths, config_paths
-    return mixed_dataset_config(config_paths), combined_dataset_name(config_paths), config_paths, config_paths
+        return config_paths[0], dataset_id(config_paths[0]), config_paths, config_paths, sample_info
+    return mixed_dataset_config(config_paths), combined_dataset_name(config_paths), config_paths, config_paths, sample_info
 
 
 def archive_best_weights(
@@ -584,6 +804,7 @@ def archive_best_weights(
     base_model: str = BASE_MODEL,
     augment_preset_name: str = DEFAULT_AUGMENT_PRESET,
     train_args: dict | None = None,
+    train_sample_info: list[dict] | None = None,
 ) -> Path:
     best_weights = ROOT / "runs" / "detect" / "train" / "weights" / "best.pt"
     if not best_weights.exists():
@@ -591,15 +812,26 @@ def archive_best_weights(
 
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    archive_name = f"{base_model}_{now:%Y%m%d_%H%M%S}_{dataset_name}_{augment_preset_name}.pt"
-    archive_path = ARCHIVE_DIR / archive_name
+    dominant_source = dominant_train_source(train_sample_info or [], dataset_name)
+    for _ in range(20):
+        archive_name = f"{compact_model_name(base_model)}_{dominant_source}_{memorable_model_words()}.pt"
+        archive_path = ARCHIVE_DIR / archive_name
+        if not archive_path.exists():
+            break
+    else:
+        archive_name = f"{compact_model_name(base_model)}_{dominant_source}_{now:%Y%m%d_%H%M%S}.pt"
+        archive_path = ARCHIVE_DIR / archive_name
     shutil.copy2(best_weights, archive_path)
 
     metadata = {
         "created_at": now.isoformat(timespec="microseconds"),
         "base_model": base_model,
+        "compact_model": compact_model_name(base_model),
         "augment_preset": augment_preset_name,
         "train_args": train_args or {},
+        "dominant_train_source": dominant_source,
+        "train_sample_multipliers": train_sample_info or [],
+        "memorable_name": archive_path.stem,
         "weights": str(archive_path),
         "source_weights": str(best_weights),
         "training_data_config": str(data_config),
@@ -620,11 +852,12 @@ def archive_best_weights(
 
 def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None) -> Path:
     base_model = resolve_base_model(base_model)
-    data_config, dataset_name, train_config_paths, val_config_paths = training_data_config()
+    data_config, dataset_name, train_config_paths, val_config_paths, train_sample_info = training_data_config()
     augment_preset_name, train_args = resolve_augment_preset(augment_preset)
     print(f"Using dataset config: {data_config}")
     print(f"Using base model: {base_model}")
     print(f"Using training preset: {augment_preset_name}")
+    print(f"Training sample multipliers: {json.dumps(train_sample_info, ensure_ascii=False, sort_keys=True)}")
     print(f"Training args: {json.dumps(train_args, ensure_ascii=False, sort_keys=True)}")
     model = YOLO(model_weight_source(base_model))
     model.train(
@@ -645,6 +878,7 @@ def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None
         base_model,
         augment_preset_name,
         train_args,
+        train_sample_info,
     )
     print(f"Archived best weights to {archive_path}")
     return archive_path

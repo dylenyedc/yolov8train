@@ -1,6 +1,7 @@
 # YOLOv8 训练与测试工具
 
 这个目录用于训练 YOLOv8 检测模型，并保存已经训练好的权重。
+把数据集扔到datasets/目录下，等待魔法发生
 
 ## 目录说明
 
@@ -69,6 +70,17 @@ YOLO_TRAIN_DATASET_PATH=barrel:bucket YOLO_VALID_DATASET_PATH=white_cylinder_det
 
 兼容写法 `YOLO_VAL_DATASET_PATH` 也可以使用，但推荐用 `YOLO_VALID_DATASET_PATH`。
 
+训练集支持按来源抽样或翻倍，倍率范围是 `0.1x` 到 `10x`。命令行用 `YOLO_TRAIN_SAMPLE_MULTIPLIERS` 传 JSON，键名是训练来源名；普通数据集就是目录名，金样本会写成 `dataset_golden`：
+
+```bash
+YOLO_TRAIN_DATASET_PATH=bucket:golden@golden \
+YOLO_VALID_DATASET_PATH=bucket \
+YOLO_TRAIN_SAMPLE_MULTIPLIERS='{"bucket":0.5,"golden_golden":2.0}' \
+.venv/bin/python train.py
+```
+
+小于 `1x` 会抽样训练图，大于 `1x` 会在训练列表里重复图片；验证集和测试集不会被倍率影响。
+
 训练支持增强参数配方，可以用 `YOLO_TRAIN_PRESET` 指定：
 
 ```bash
@@ -101,21 +113,13 @@ YOLO_TRAIN_DATASET_PATH=bucket@golden YOLO_VALID_DATASET_PATH=bucket .venv/bin/p
 YOLO_TRAIN_DATASET_PATH=barrel:bucket@golden YOLO_VALID_DATASET_PATH=white_cylinder_detection .venv/bin/python train.py
 ```
 
-训练完成后，脚本会把 `runs/detect/train/weights/best.pt` 复制到 `model_archieve/`。权重文件名包含基础模型、训练时间、数据集名称和增强配方名称，例如：
+训练完成后，脚本会把 `runs/detect/train/weights/best.pt` 复制到 `model_archieve/`。权重文件名会尽量短：紧凑模型名、占比最大的训练集来源，以及一组容易记的英文 `形容词+名词`。例如：
 
 ```text
-yolov8s_20260706_205349_white_cylinder_detection_official_default.pt
+8n_bucket_brave_orbit.pt
 ```
 
-同时会保存一个同目录的 JSON 元数据文件，里面记录训练使用的数据集、类别名、Roboflow 版本信息、增强配方、训练参数和对应权重路径。
-
-混合数据集训练时，权重名会包含所有数据集来源，例如：
-
-```text
-yolov8n_20260707_021500_mixed_barrel_bucket_white_cylinder_detection.pt
-```
-
-对应 JSON 里会有 `is_mixed_dataset`、`dataset_sources` 和 `datasets`，用于查看本次训练具体混合了哪些数据集。
+完整信息不再塞进 `.pt` 文件名，而是保存到同目录 JSON 元数据文件里。JSON 会记录训练使用的数据集、类别名、Roboflow 版本信息、增强配方、训练参数、训练集倍率、占比最大的训练来源和对应权重路径。
 
 ## 交互式训练和批量测试
 
@@ -134,6 +138,7 @@ yolov8n_20260707_021500_mixed_barrel_bucket_white_cylinder_detection.pt
 5. 模型管理入口可以把模型移入停用归档区，或从停用归档区恢复。
 6. 每级菜单都有 `返回` 选项；列表里用 ↑/↓ 移动，Enter 勾选或确认。
 7. 数据集列表里会显示每个数据集目录的最后更新时间；如果存在 `golden/images`，也会显示 `dataset/golden` 金样本子集。
+8. 训练集来源列表里可以用 `+` / `-` 调整当前数据集倍率，用 `d` 查看当前数据集详情；模型列表里也可以用 `d` 查看元数据详情。
 
 `archieve` 会列出 `model_archieve/` 里的归档权重，并显示基础模型、数据集来源和创建时间等信息。
 
@@ -158,6 +163,14 @@ runs/detect/batch_test_<时间>_<测试集名>/<序号>_<模型名>/
 runs/detect/batch_test_<时间>_<测试集名>/comparison_curves.png
 runs/detect/batch_test_<时间>_<测试集名>/comparison_curves.json
 ```
+
+如果一次选择了多个测试集，脚本还会给每个测试集来源单独生成 watch 预测图，避免只看到 `val_batch0/1/2` 里第一个测试集的样例：
+
+```text
+runs/detect/batch_test_<时间>_<测试集名>/watch/<测试集来源>/<模型名>/
+```
+
+每个测试集来源默认抽取前 24 张图片生成预测可视化。
 
 命令行也可以生成测试集配置：
 
@@ -192,7 +205,7 @@ http://127.0.0.1:7860
 
 - 选择 YOLO 家族和模型尺寸。
 - 选择增强参数配方。
-- 多选训练集来源。
+- 多选训练集来源，并为每个训练来源选择抽样/翻倍倍率。
 - 多选验证集来源。
 - 多选测试集来源。
 - 多选 `model_archieve/` 里的归档权重或最近一次训练的 `last.pt` / `best.pt` 进行批量测试。
