@@ -1,0 +1,195 @@
+{
+  "created_at": "2026-07-09T21:37:35.716283",
+  "base_model": "yolov8n",
+  "compact_model": "8n",
+  "augment_preset": "official_default",
+  "train_args": {
+    "epochs": 100,
+    "patience": 100,
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 0.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "perspective": 0.0,
+    "fliplr": 0.5,
+    "mosaic": 1.0,
+    "mixup": 0.0,
+    "close_mosaic": 10
+  },
+  "dominant_train_source": "white_cylinder_detection",
+  "train_sample_multipliers": [
+    {
+      "source": "barrel",
+      "multiplier": 0.1,
+      "original_image_count": 3118,
+      "effective_image_count": 312
+    },
+    {
+      "source": "findtopfullbusket",
+      "multiplier": 1.0,
+      "original_image_count": 108,
+      "effective_image_count": 108
+    },
+    {
+      "source": "fromdepth",
+      "multiplier": 0.75,
+      "original_image_count": 250,
+      "effective_image_count": 188
+    },
+    {
+      "source": "golden_golden",
+      "multiplier": 1.0,
+      "original_image_count": 43,
+      "effective_image_count": 43
+    },
+    {
+      "source": "white_cylinder_detection",
+      "multiplier": 0.75,
+      "original_image_count": 449,
+      "effective_image_count": 337
+    }
+  ],
+  "memorable_name": "8n_white_cylinder_detection_vivid_harbor",
+  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/8n_white_cylinder_detection_vivid_harbor.pt",
+  "source_weights": "/home/cqu-996/vscodews/yolov8train/runs/detect/train/weights/best.pt",
+  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_barrel_findtopfullbusket_fromdepth_golden_golden_white_cylinder_detection_valid_fromdepth_golden_golden.yaml",
+  "is_mixed_dataset": true,
+  "is_cross_validation": true,
+  "dataset_name": "train_barrel_findtopfullbusket_fromdepth_golden_golden_white_cylinder_detection_valid_fromdepth_golden_golden",
+  "dataset_sources": [
+    "barrel",
+    "findtopfullbusket",
+    "fromdepth",
+    "golden",
+    "white_cylinder_detection"
+  ],
+  "train_dataset_sources": [
+    "barrel",
+    "findtopfullbusket",
+    "fromdepth",
+    "golden",
+    "white_cylinder_detection"
+  ],
+  "val_dataset_sources": [
+    "fromdepth",
+    "golden"
+  ],
+  "train_datasets": [
+    {
+      "dataset_name": "barrel",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/barrel",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/barrel/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "markpen",
+        "project": "barrel-hnjtm-f1vow",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/markpen/barrel-hnjtm-f1vow/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "findtopfullbusket",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/findtopfullbusket/data.yaml",
+      "class_names": [
+        "test-markfull-busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "test_markfull_busket",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/test_markfull_busket/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "fromdepth",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromdepth",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromdepth/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "golden",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/golden",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/golden/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "golden-busket-detection",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/golden-busket-detection/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "white_cylinder_detection",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/white_cylinder_detection",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/white_cylinder_detection/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "markpen",
+        "project": "white_cylinder_detection-efbdb",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/markpen/white_cylinder_detection-efbdb/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ],
+  "val_datasets": [
+    {
+      "dataset_name": "fromdepth",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromdepth",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromdepth/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "golden",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/golden",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/golden/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "golden-busket-detection",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/golden-busket-detection/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ]
+}

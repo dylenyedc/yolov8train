@@ -1,0 +1,84 @@
+{
+  "created_at": "2026-07-10T13:51:48.671253",
+  "base_model": "yolov8n",
+  "compact_model": "8n",
+  "augment_preset": "official_default",
+  "train_args": {
+    "epochs": 100,
+    "patience": 100,
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 0.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "perspective": 0.0,
+    "fliplr": 0.5,
+    "mosaic": 1.0,
+    "mixup": 0.0,
+    "close_mosaic": 10
+  },
+  "model_note": "base_fromdepth",
+  "name_token": "base_fromdepth",
+  "dominant_train_source": "fromdepth",
+  "train_sample_multipliers": [
+    {
+      "source": "fromdepth",
+      "multiplier": 1.0,
+      "original_image_count": 250,
+      "effective_image_count": 250
+    }
+  ],
+  "memorable_name": "8n_0710_base_fromdepth",
+  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/8n_0710_base_fromdepth.pt",
+  "source_weights": "/home/cqu-996/vscodews/yolov8train/runs/detect/train/weights/best.pt",
+  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_fromdepth_valid_fromdepth.yaml",
+  "is_mixed_dataset": false,
+  "is_cross_validation": false,
+  "dataset_name": "train_fromdepth_valid_fromdepth",
+  "dataset_sources": [
+    "fromdepth"
+  ],
+  "train_dataset_sources": [
+    "fromdepth"
+  ],
+  "val_dataset_sources": [
+    "fromdepth"
+  ],
+  "train_datasets": [
+    {
+      "dataset_name": "fromdepth",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromdepth",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromdepth/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ],
+  "val_datasets": [
+    {
+      "dataset_name": "fromdepth",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromdepth",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromdepth/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ]
+}

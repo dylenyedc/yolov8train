@@ -75,6 +75,24 @@ def show_detail(stdscr, title: str, text: str) -> None:
             return
 
 
+def prompt_text(stdscr, title: str, prompt: str) -> str | None:
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+    stdscr.addstr(0, 0, title[: max(1, width - 1)])
+    stdscr.addstr(1, 0, "直接 Enter 留空；Esc 返回")
+    stdscr.addstr(3, 0, prompt[: max(1, width - 1)])
+    stdscr.addstr(4, 0, "> ")
+    stdscr.refresh()
+    curses.echo()
+    try:
+        text = stdscr.getstr(4, 2, max(1, width - 3)).decode("utf-8", errors="replace").strip()
+    except KeyboardInterrupt:
+        return None
+    finally:
+        curses.noecho()
+    return text
+
+
 def choose_one(
     stdscr,
     title: str,
@@ -304,8 +322,8 @@ def choose_dataset_names(stdscr, title: str) -> list[str] | None:
     return [name_by_label[label] for label in selected_labels]
 
 
-def multiplier_label(label: str, multiplier: float) -> str:
-    return f"{label} | train x{multiplier:g}"
+def multiplier_label(label: str, multiplier: float, kind: str = "train") -> str:
+    return f"{label} | {kind} x{multiplier:g}"
 
 
 def choose_train_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str, float]] | None:
@@ -315,7 +333,7 @@ def choose_train_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str,
     multipliers = {value: 1.0 for value in values}
 
     def current_labels() -> list[str]:
-        return [multiplier_label(base_labels[value], multipliers[value]) for value in values]
+        return [multiplier_label(base_labels[value], multipliers[value], "train") for value in values]
 
     labels = current_labels()
     value_by_label = {label: value for label, value in zip(labels, values)}
@@ -327,7 +345,7 @@ def choose_train_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str,
         index = min(range(len(choices)), key=lambda i: abs(choices[i] - multipliers[value]))
         index = max(0, min(len(choices) - 1, index + direction))
         multipliers[value] = choices[index]
-        new_label = multiplier_label(base_labels[value], multipliers[value])
+        new_label = multiplier_label(base_labels[value], multipliers[value], "train")
         value_by_label[new_label] = value
         details[new_label] = dataset_detail(value)
         return new_label
@@ -338,6 +356,38 @@ def choose_train_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str,
     selected_values = [value_by_label[label] for label in selected_labels]
     selected_multipliers = {
         train.source_name(train.parse_dataset_sources(value, "interactive")[0], "train"): multipliers[value]
+        for value in selected_values
+    }
+    return selected_values, selected_multipliers
+
+
+def choose_test_dataset_names(stdscr, title: str) -> tuple[list[str], dict[str, float]] | None:
+    choices = dataset_choices()
+    values = [value for _, value in choices]
+    base_labels = {value: label for label, value in choices}
+    multipliers = {value: 1.0 for value in values}
+
+    labels = [multiplier_label(base_labels[value], multipliers[value], "test") for value in values]
+    value_by_label = {label: value for label, value in zip(labels, values)}
+    details = {label: dataset_detail(value) for label, value in value_by_label.items()}
+
+    def adjust(label: str, direction: int) -> str:
+        value = value_by_label[label]
+        choices = train.sample_choice_options()
+        index = min(range(len(choices)), key=lambda i: abs(choices[i] - multipliers[value]))
+        index = max(0, min(len(choices) - 1, index + direction))
+        multipliers[value] = choices[index]
+        new_label = multiplier_label(base_labels[value], multipliers[value], "test")
+        value_by_label[new_label] = value
+        details[new_label] = dataset_detail(value)
+        return new_label
+
+    selected_labels = choose_many(stdscr, title, labels, details=details, adjust=adjust)
+    if selected_labels is None:
+        return None
+    selected_values = [value_by_label[label] for label in selected_labels]
+    selected_multipliers = {
+        train.source_name(train.parse_dataset_sources(value, "interactive")[0], "test"): multipliers[value]
         for value in selected_values
     }
     return selected_values, selected_multipliers
@@ -359,13 +409,15 @@ def choose_training_datasets(stdscr) -> tuple[list[str], list[str], Path, str, d
         return train_datasets, val_datasets, data_config, dataset_name, sample_multipliers
 
 
-def choose_test_datasets(stdscr) -> tuple[list[str], Path, str] | None:
-    test_datasets = choose_dataset_names(stdscr, "选择测试集来源")
-    if test_datasets is None:
+def choose_test_datasets(stdscr) -> tuple[list[str], Path, str, dict[str, float]] | None:
+    selected = choose_test_dataset_names(stdscr, "选择测试集来源")
+    if selected is None:
         return None
+    test_datasets, sample_multipliers = selected
     os.environ[train.TEST_DATASET_ENV] = os.pathsep.join(test_datasets)
-    test_config, test_name, _ = train.testing_data_config()
-    return test_datasets, test_config, test_name
+    os.environ[train.TEST_SAMPLE_ENV] = json.dumps(sample_multipliers)
+    test_config, test_name, _, _ = train.testing_data_config()
+    return test_datasets, test_config, test_name, sample_multipliers
 
 
 def run_outside_curses(stdscr, action) -> None:
@@ -396,6 +448,9 @@ def training_menu(stdscr) -> None:
         if preset_label is None:
             continue
         augment_preset = dict(preset_choices)[preset_label]
+        model_note = prompt_text(stdscr, "训练 / 自定义批注", "批注会替换文件名里的随机名字字段：")
+        if model_note is None:
+            continue
         selected = choose_training_datasets(stdscr)
         if selected is None:
             continue
@@ -406,12 +461,13 @@ def training_menu(stdscr) -> None:
             print(f"Model size: {model_size}")
             print(f"Base model: {base_model}")
             print(f"Augment preset: {augment_preset}")
+            print(f"Model note: {model_note or '(random)'}")
             print(f"Train datasets: {', '.join(train_datasets)}")
             print(f"Train sample multipliers: {json.dumps(sample_multipliers, ensure_ascii=False, sort_keys=True)}")
             print(f"Valid datasets: {', '.join(val_datasets)}")
             print(f"Dataset name: {dataset_name}")
             print(f"Dataset config: {data_config}")
-            train.run_training(base_model, augment_preset)
+            train.run_training(base_model, augment_preset, model_note)
 
         run_outside_curses(stdscr, train_action)
         return
@@ -445,13 +501,14 @@ def testing_menu(stdscr) -> None:
         selected = choose_test_datasets(stdscr)
         if selected is None:
             continue
-        test_datasets, test_config, test_name = selected
+        test_datasets, test_config, test_name, sample_multipliers = selected
 
         def validate_action() -> None:
             print("Test weights:")
             for weights_path in weights_paths:
                 print(f"- {weights_path}")
             print(f"Test datasets: {', '.join(test_datasets)}")
+            print(f"Test sample multipliers: {json.dumps(sample_multipliers, ensure_ascii=False, sort_keys=True)}")
             print(f"Test name: {test_name}")
             print(f"Test config: {test_config}")
             validate_weights(weights_paths)

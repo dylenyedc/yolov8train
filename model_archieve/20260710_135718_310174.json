@@ -1,0 +1,84 @@
+{
+  "created_at": "2026-07-10T13:57:18.310174",
+  "base_model": "yolov8n",
+  "compact_model": "8n",
+  "augment_preset": "official_default",
+  "train_args": {
+    "epochs": 100,
+    "patience": 100,
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 0.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "perspective": 0.0,
+    "fliplr": 0.5,
+    "mosaic": 1.0,
+    "mixup": 0.0,
+    "close_mosaic": 10
+  },
+  "model_note": "findtopbase",
+  "name_token": "findtopbase",
+  "dominant_train_source": "findtop",
+  "train_sample_multipliers": [
+    {
+      "source": "findtop",
+      "multiplier": 1.0,
+      "original_image_count": 110,
+      "effective_image_count": 110
+    }
+  ],
+  "memorable_name": "8n_0710_findtopbase",
+  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/8n_0710_findtopbase.pt",
+  "source_weights": "/home/cqu-996/vscodews/yolov8train/runs/detect/train/weights/best.pt",
+  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_findtop_valid_findtop.yaml",
+  "is_mixed_dataset": false,
+  "is_cross_validation": false,
+  "dataset_name": "train_findtop_valid_findtop",
+  "dataset_sources": [
+    "findtop"
+  ],
+  "train_dataset_sources": [
+    "findtop"
+  ],
+  "val_dataset_sources": [
+    "findtop"
+  ],
+  "train_datasets": [
+    {
+      "dataset_name": "findtop",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/findtop",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/findtop/data.yaml",
+      "class_names": [
+        "findtop"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "find_bucket_opening_in_blue",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/find_bucket_opening_in_blue/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ],
+  "val_datasets": [
+    {
+      "dataset_name": "findtop",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/findtop",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/findtop/data.yaml",
+      "class_names": [
+        "findtop"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "find_bucket_opening_in_blue",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/find_bucket_opening_in_blue/dataset/dataset"
+      },
+      "version": "dataset"
+    }
+  ]
+}

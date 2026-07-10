@@ -46,8 +46,9 @@ PAGE = r"""
     h2 { margin: 0 0 12px; font-size: 16px; }
     h3 { margin: 14px 0 8px; font-size: 14px; }
     label { display: block; margin: 6px 0; line-height: 1.35; }
-    select, button { font: inherit; }
+    select, button, input { font: inherit; }
     select { width: 100%; padding: 8px; border: 1px solid #c7d0da; border-radius: 6px; background: white; }
+    input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #c7d0da; border-radius: 6px; background: white; }
     select[multiple] { min-height: 180px; }
     button { border: 1px solid #243b53; border-radius: 6px; padding: 8px 12px; color: #fff; background: #243b53; cursor: pointer; }
     button.secondary { color: #243b53; background: #fff; }
@@ -93,6 +94,8 @@ PAGE = r"""
         <select id="modelSize"></select>
         <label>增强参数配方</label>
         <select id="trainPreset"></select>
+        <label>自定义批注</label>
+        <input id="modelNote" type="text" placeholder="留空则自动生成 vivid_harbor">
         <h3>训练集来源</h3>
         <div id="trainSources" class="choices"></div>
         <h3>验证集来源</h3>
@@ -207,7 +210,7 @@ PAGE = r"""
       $("trainPreset").innerHTML = data.training_presets.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
       renderChecks("trainSources", data.datasets, true);
       renderChecks("validSources", data.datasets);
-      renderChecks("testSources", data.datasets);
+      renderChecks("testSources", data.datasets, true);
       $("weightSelect").innerHTML = data.weights.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
     }
 
@@ -226,6 +229,7 @@ PAGE = r"""
       model_family: $("modelFamily").value,
       model_size: $("modelSize").value,
       augment_preset: $("trainPreset").value,
+      model_note: $("modelNote").value.trim(),
       train_sources: checkedValues("trainSources"),
       train_sample_multipliers: checkedSampleMultipliers("trainSources"),
       valid_sources: checkedValues("validSources"),
@@ -233,6 +237,7 @@ PAGE = r"""
 
     $("startValidate").onclick = () => postJson("/api/validate", {
       weights: selectedValues("weightSelect"),
+      test_sample_multipliers: checkedSampleMultipliers("testSources"),
       test_sources: checkedValues("testSources"),
     });
 
@@ -554,6 +559,10 @@ def run_summaries() -> list[dict]:
             path for path in image_files
             if "watch" in path.relative_to(run_dir).parts
         ]
+        watch_batch_images = [
+            path for path in watch_images
+            if path.name.startswith("batch_")
+        ]
         batch_images = [
             path for path in image_files
             if path.name.startswith("val_batch")
@@ -563,7 +572,13 @@ def run_summaries() -> list[dict]:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:8]
-        images = list(dict.fromkeys(preferred_images + sorted(watch_images)[:80] + sorted(batch_images)[:12] + other_images))
+        images = list(dict.fromkeys(
+            preferred_images
+            + sorted(watch_batch_images)[:80]
+            + sorted([path for path in watch_images if path not in watch_batch_images])[:12]
+            + sorted(batch_images)[:12]
+            + other_images
+        ))
         results_csv = run_dir / "results.csv"
         summaries.append({
             "name": run_dir.relative_to(runs_root).as_posix(),
@@ -745,6 +760,7 @@ def api_train():
     else:
         base_model = train.resolve_base_model(payload.get("base_model") or train.BASE_MODEL)
     augment_preset = payload.get("augment_preset") or train.DEFAULT_AUGMENT_PRESET
+    model_note = payload.get("model_note") or ""
     train_sources = payload.get("train_sources") or []
     valid_sources = payload.get("valid_sources") or []
     sample_multipliers = payload.get("train_sample_multipliers") or {}
@@ -758,7 +774,8 @@ def api_train():
         "import os, train\n"
         "train.run_training("
         "os.environ.get('YOLO_BASE_MODEL', train.BASE_MODEL), "
-        "os.environ.get(train.TRAIN_PRESET_ENV, train.DEFAULT_AUGMENT_PRESET)"
+        "os.environ.get(train.TRAIN_PRESET_ENV, train.DEFAULT_AUGMENT_PRESET), "
+        "os.environ.get(train.MODEL_NOTE_ENV, '')"
         ")\n"
     )
     ok, error = start_process(
@@ -767,6 +784,7 @@ def api_train():
         {
             "YOLO_BASE_MODEL": base_model,
             train.TRAIN_PRESET_ENV: augment_preset,
+            train.MODEL_NOTE_ENV: model_note,
             train.TRAIN_DATASET_ENV: os.pathsep.join(train_sources),
             train.VALID_DATASET_ENV: os.pathsep.join(valid_sources),
             train.TRAIN_SAMPLE_ENV: json.dumps(sample_multipliers),
@@ -782,6 +800,7 @@ def api_validate():
     payload = request.get_json(force=True)
     weights = payload.get("weights") or []
     test_sources = payload.get("test_sources") or []
+    test_sample_multipliers = payload.get("test_sample_multipliers") or {}
     if isinstance(weights, str):
         weights = [weights]
     if not weights:
@@ -803,6 +822,7 @@ def api_validate():
         {
             "YOLO_VALIDATE_WEIGHTS": os.pathsep.join(weights),
             train.TEST_DATASET_ENV: os.pathsep.join(test_sources),
+            train.TEST_SAMPLE_ENV: json.dumps(test_sample_multipliers),
         },
     )
     if not ok:

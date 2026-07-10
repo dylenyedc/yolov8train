@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 import yaml
 from ultralytics import YOLO
 
@@ -54,10 +55,15 @@ VALID_DATASET_ENV = "YOLO_VALID_DATASET_PATH"
 TEST_DATASET_ENV = "YOLO_TEST_DATASET_PATH"
 TRAIN_PRESET_ENV = "YOLO_TRAIN_PRESET"
 TRAIN_SAMPLE_ENV = "YOLO_TRAIN_SAMPLE_MULTIPLIERS"
+TEST_SAMPLE_ENV = "YOLO_TEST_SAMPLE_MULTIPLIERS"
+MODEL_NOTE_ENV = "YOLO_MODEL_NOTE"
 MIXED_DATASET_CLASS_NAME = "busket"
 GOLDEN_SPLIT = "golden"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WATCH_IMAGES_PER_SOURCE = 24
+WATCH_BATCH_COLUMNS = 4
+WATCH_BATCH_ROWS = 3
+WATCH_BATCH_TILE_WIDTH = 360
 TRAIN_SAMPLE_CHOICES = [0.1, 0.2, 0.25, 0.33, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 7.5, 10.0]
 FAKER = Faker("en_US")
 MODEL_ADJECTIVES = [
@@ -178,9 +184,9 @@ def sample_choice_options() -> list[float]:
 def clamp_sample_multiplier(value: object) -> float:
     number = float(value)
     if number <= 0:
-        raise ValueError("训练集倍率必须大于 0")
+        raise ValueError("数据集倍率必须大于 0")
     if number < TRAIN_SAMPLE_CHOICES[0] or number > TRAIN_SAMPLE_CHOICES[-1]:
-        raise ValueError(f"训练集倍率必须在 {TRAIN_SAMPLE_CHOICES[0]} 到 {TRAIN_SAMPLE_CHOICES[-1]} 之间")
+        raise ValueError(f"数据集倍率必须在 {TRAIN_SAMPLE_CHOICES[0]} 到 {TRAIN_SAMPLE_CHOICES[-1]} 之间")
     return number
 
 
@@ -192,6 +198,21 @@ def memorable_model_words() -> str:
     adjective = FAKER.random_element(MODEL_ADJECTIVES)
     noun = FAKER.random_element(MODEL_NOUNS)
     return safe_name(f"{adjective}_{noun}").lower()
+
+
+def model_note_name(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[^\w.-]+", "_", text, flags=re.UNICODE)
+    text = text.strip("._-")
+    if len(text) > 48:
+        text = text[:48].strip("._-")
+    return text or ""
+
+
+def archive_name_token(model_note: str | None = None) -> str:
+    return model_note_name(model_note) or memorable_model_words()
 
 
 def model_family_options() -> list[str]:
@@ -434,14 +455,18 @@ def source_image_groups(
     sources: list[tuple[Path, str | None]],
     default_split: str,
     limit: int | None = None,
+    multipliers: dict[str, float] | None = None,
 ) -> list[tuple[str, list[Path]]]:
     groups: list[tuple[str, list[Path]]] = []
     for source in sources:
-        image_dir = Path(source_split_paths([source], default_split)[0])
-        images = sorted(path.resolve() for path in image_dir.rglob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
+        label = source_name(source, default_split)
+        images = image_paths_for_source(source, default_split)
+        multiplier = source_sample_multiplier(source, multipliers, default_split)
+        if multiplier < 1.0:
+            images = sampled_images(images, multiplier, f"watch:{label}:{multiplier}")
         if limit is not None:
             images = images[:limit]
-        groups.append((source_name(source, default_split), images))
+        groups.append((label, images))
     return groups
 
 
@@ -451,7 +476,20 @@ def image_paths_for_source(source: tuple[Path, str | None], default_split: str) 
 
 
 def parse_train_sample_multipliers(value: str | None, sources: list[tuple[Path, str | None]]) -> dict[str, float]:
-    keys = {source_name(source, "train") for source in sources}
+    return parse_sample_multipliers(value, sources, "train", TRAIN_SAMPLE_ENV)
+
+
+def parse_test_sample_multipliers(value: str | None, sources: list[tuple[Path, str | None]]) -> dict[str, float]:
+    return parse_sample_multipliers(value, sources, "test", TEST_SAMPLE_ENV)
+
+
+def parse_sample_multipliers(
+    value: str | None,
+    sources: list[tuple[Path, str | None]],
+    default_split: str,
+    env_name: str,
+) -> dict[str, float]:
+    keys = {source_name(source, default_split) for source in sources}
     multipliers = {key: 1.0 for key in keys}
     if not value:
         return multipliers
@@ -467,7 +505,7 @@ def parse_train_sample_multipliers(value: str | None, sources: list[tuple[Path, 
             payload[key.strip()] = raw_multiplier.strip()
 
     if not isinstance(payload, dict):
-        raise ValueError(f"{TRAIN_SAMPLE_ENV} must be a JSON object or key=value list")
+        raise ValueError(f"{env_name} must be a JSON object or key=value list")
 
     for key, raw_multiplier in payload.items():
         safe_key = safe_name(key)
@@ -476,10 +514,14 @@ def parse_train_sample_multipliers(value: str | None, sources: list[tuple[Path, 
     return multipliers
 
 
-def source_sample_multiplier(source: tuple[Path, str | None], multipliers: dict[str, float] | None) -> float:
+def source_sample_multiplier(
+    source: tuple[Path, str | None],
+    multipliers: dict[str, float] | None,
+    default_split: str = "train",
+) -> float:
     if not multipliers:
         return 1.0
-    return multipliers.get(source_name(source, "train"), 1.0)
+    return multipliers.get(source_name(source, default_split), 1.0)
 
 
 def sampled_images(images: list[Path], multiplier: float, seed_key: str) -> list[Path]:
@@ -542,6 +584,47 @@ def materialize_train_sources(
     return [str(output_path)], sample_info
 
 
+def materialize_test_sources(
+    test_sources: list[tuple[Path, str | None]],
+    multipliers: dict[str, float] | None = None,
+) -> tuple[list[str], list[dict]]:
+    paths: list[str] = []
+    sample_info: list[dict] = []
+    sampled_lines: list[str] = []
+    uses_sampling = False
+
+    for source in test_sources:
+        label = source_name(source, "test")
+        multiplier = source_sample_multiplier(source, multipliers, "test")
+        images = image_paths_for_source(source, "test")
+        effective_images = sampled_images(images, multiplier, f"test:{label}:{multiplier}")
+        if multiplier != 1.0:
+            uses_sampling = True
+        sample_info.append({
+            "source": label,
+            "multiplier": multiplier,
+            "original_image_count": len(images),
+            "effective_image_count": len(effective_images),
+        })
+        sampled_lines.extend(str(path) for path in effective_images)
+        if multiplier == 1.0:
+            paths.extend(source_split_paths([source], "test"))
+
+    if not uses_sampling:
+        return paths, sample_info
+
+    output_name = safe_name(
+        "sampled_test_"
+        + "_".join(f"{item['source']}_{format_multiplier(item['multiplier'])}" for item in sample_info)
+    )
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = GENERATED_DIR / f"{output_name}.txt"
+    with output_path.open("w", encoding="utf-8") as file:
+        file.write("\n".join(sampled_lines))
+        file.write("\n")
+    return [str(output_path)], sample_info
+
+
 def dominant_train_source(sample_info: list[dict], fallback: str = "dataset") -> str:
     if not sample_info:
         return safe_name(fallback)
@@ -585,10 +668,17 @@ def cross_validation_dataset_config(
     return output_path, sample_info
 
 
-def test_dataset_config(test_sources: list[tuple[Path, str | None]]) -> tuple[Path, str, list[tuple[Path, str | None]]]:
+def test_dataset_config(
+    test_sources: list[tuple[Path, str | None]],
+    multipliers: dict[str, float] | None = None,
+) -> tuple[Path, str, list[tuple[Path, str | None]], list[dict]]:
     test_name = safe_name("_".join(source_names(test_sources, "test")))
-    output_name = safe_name(f"test_{test_name}")
-    test_image_paths = source_split_paths(test_sources, "test")
+    test_image_paths, sample_info = materialize_test_sources(test_sources, multipliers)
+    if any(item["multiplier"] != 1.0 for item in sample_info):
+        sample_name = "_".join(f"{item['source']}_{format_multiplier(item['multiplier'])}" for item in sample_info)
+        output_name = safe_name(f"test_{test_name}_sampled_{sample_name}")
+    else:
+        output_name = safe_name(f"test_{test_name}")
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"{output_name}.yaml"
     output = {
@@ -600,13 +690,14 @@ def test_dataset_config(test_sources: list[tuple[Path, str | None]]) -> tuple[Pa
     }
     with output_path.open("w", encoding="utf-8") as file:
         yaml.safe_dump(output, file, sort_keys=False, allow_unicode=True)
-    return output_path, output_name, test_sources
+    return output_path, output_name, test_sources, sample_info
 
 
-def testing_data_config() -> tuple[Path, str, list[tuple[Path, str | None]]]:
+def testing_data_config() -> tuple[Path, str, list[tuple[Path, str | None]], list[dict]]:
     value = os.environ.get(TEST_DATASET_ENV, str(DEFAULT_DATASET))
     test_sources = parse_dataset_sources(value, TEST_DATASET_ENV)
-    return test_dataset_config(test_sources)
+    multipliers = parse_test_sample_multipliers(os.environ.get(TEST_SAMPLE_ENV), test_sources)
+    return test_dataset_config(test_sources, multipliers)
 
 
 def mean_curve(y_values: object, x_values: np.ndarray) -> np.ndarray:
@@ -689,39 +780,120 @@ def write_batch_metric_curves(results: list[dict], output_dir: Path) -> None:
         json.dump(results, file, ensure_ascii=False, indent=2)
 
 
+def fitted_image(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    canvas = Image.new("RGB", size, (245, 247, 250))
+    image = image.convert("RGB")
+    image.thumbnail(size, Image.Resampling.LANCZOS)
+    offset = ((size[0] - image.width) // 2, (size[1] - image.height) // 2)
+    canvas.paste(image, offset)
+    return canvas
+
+
+def write_watch_batches(
+    image_dir: Path,
+    output_dir: Path,
+    title: str,
+    columns: int = WATCH_BATCH_COLUMNS,
+    rows: int = WATCH_BATCH_ROWS,
+    tile_width: int = WATCH_BATCH_TILE_WIDTH,
+) -> list[Path]:
+    images = sorted(
+        path
+        for path in image_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+    if not images:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    batch_size = columns * rows
+    tile_height = int(tile_width * 0.72)
+    label_height = 24
+    title_height = 34
+    batches: list[Path] = []
+    font = ImageFont.load_default()
+
+    for batch_index, start in enumerate(range(0, len(images), batch_size), start=1):
+        batch_images = images[start:start + batch_size]
+        canvas = Image.new(
+            "RGB",
+            (columns * tile_width, title_height + rows * (tile_height + label_height)),
+            (255, 255, 255),
+        )
+        draw = ImageDraw.Draw(canvas)
+        draw.text((8, 10), f"{title} | batch {batch_index}", fill=(31, 41, 55), font=font)
+
+        for index, image_path in enumerate(batch_images):
+            row = index // columns
+            column = index % columns
+            x = column * tile_width
+            y = title_height + row * (tile_height + label_height)
+            with Image.open(image_path) as image:
+                canvas.paste(fitted_image(image, (tile_width, tile_height)), (x, y))
+            label = image_path.stem
+            if len(label) > 42:
+                label = f"{label[:19]}...{label[-20:]}"
+            draw.rectangle((x, y + tile_height, x + tile_width, y + tile_height + label_height), fill=(241, 245, 249))
+            draw.text((x + 6, y + tile_height + 6), label, fill=(55, 65, 81), font=font)
+
+        output_path = output_dir / f"batch_{batch_index:03d}.jpg"
+        canvas.save(output_path, quality=90, optimize=True)
+        batches.append(output_path)
+
+    return batches
+
+
 def write_watch_predictions(
     weight_paths: list[Path],
     test_sources: list[tuple[Path, str | None]],
     output_dir: Path,
+    test_multipliers: dict[str, float] | None = None,
     max_images_per_source: int = WATCH_IMAGES_PER_SOURCE,
 ) -> None:
-    groups = source_image_groups(test_sources, "test", limit=max_images_per_source)
+    groups = source_image_groups(test_sources, "test", limit=max_images_per_source, multipliers=test_multipliers)
     watch_root = output_dir / "watch"
     watch_root.mkdir(parents=True, exist_ok=True)
+    tmp_root = watch_root / "_tmp"
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+    tmp_root.mkdir(parents=True, exist_ok=True)
     manifest = []
-    for source_label, image_paths in groups:
-        if not image_paths:
-            print(f"Watch skip empty test source: {source_label}")
-            continue
-        print(f"Writing watch predictions for {source_label}: {len(image_paths)} images")
-        source_dir = watch_root / safe_name(source_label)
-        for index, weight_path in enumerate(weight_paths, start=1):
-            model_name = f"{index:02d}_{safe_name(weight_path.stem)}"
-            YOLO(str(weight_path)).predict(
-                source=[str(path) for path in image_paths],
-                device=0,
-                project=str(source_dir),
-                name=model_name,
-                exist_ok=True,
-                save=True,
-                verbose=False,
-            )
-            manifest.append({
-                "source": source_label,
-                "model": weight_path.name,
-                "output_dir": str(source_dir / model_name),
-                "image_count": len(image_paths),
-            })
+    try:
+        for source_label, image_paths in groups:
+            if not image_paths:
+                print(f"Watch skip empty test source: {source_label}")
+                continue
+            print(f"Writing watch batch predictions for {source_label}: {len(image_paths)} images")
+            source_dir = watch_root / safe_name(source_label)
+            tmp_source_dir = tmp_root / safe_name(source_label)
+            for index, weight_path in enumerate(weight_paths, start=1):
+                model_name = f"{index:02d}_{safe_name(weight_path.stem)}"
+                tmp_model_dir = tmp_source_dir / model_name
+                batch_dir = source_dir / model_name
+                YOLO(str(weight_path)).predict(
+                    source=[str(path) for path in image_paths],
+                    device=0,
+                    project=str(tmp_source_dir),
+                    name=model_name,
+                    exist_ok=True,
+                    save=True,
+                    verbose=False,
+                )
+                batch_paths = write_watch_batches(
+                    tmp_model_dir,
+                    batch_dir,
+                    title=f"{source_label} | {weight_path.name}",
+                )
+                manifest.append({
+                    "source": source_label,
+                    "model": weight_path.name,
+                    "output_dir": str(batch_dir),
+                    "image_count": len(image_paths),
+                    "batch_count": len(batch_paths),
+                    "batches": [str(path) for path in batch_paths],
+                })
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
     with (watch_root / "manifest.json").open("w", encoding="utf-8") as file:
         json.dump(manifest, file, ensure_ascii=False, indent=2)
 
@@ -734,12 +906,14 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
     if missing_weights:
         raise FileNotFoundError(f"权重不存在: {missing_weights[0]}")
 
-    test_config, test_name, test_sources = testing_data_config()
+    test_config, test_name, test_sources, test_sample_info = testing_data_config()
+    test_multipliers = {item["source"]: item["multiplier"] for item in test_sample_info}
     now = datetime.now()
     output_dir = ROOT / "runs" / "detect" / f"batch_test_{now:%Y%m%d_%H%M%S}_{test_name}"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Test config: {test_config}")
     print(f"Test name: {test_name}")
+    print(f"Test sample multipliers: {json.dumps(test_sample_info, ensure_ascii=False, sort_keys=True)}")
     print(f"Batch output: {output_dir}")
 
     batch_results: list[dict] = []
@@ -759,7 +933,7 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
     print("Writing comparison curves...")
     write_batch_metric_curves(batch_results, output_dir)
     print("Writing per-source watch predictions...")
-    write_watch_predictions(resolved_weights, test_sources, output_dir)
+    write_watch_predictions(resolved_weights, test_sources, output_dir, test_multipliers)
     print(f"Batch testing finished: {output_dir}")
     return output_dir
 
@@ -805,6 +979,7 @@ def archive_best_weights(
     augment_preset_name: str = DEFAULT_AUGMENT_PRESET,
     train_args: dict | None = None,
     train_sample_info: list[dict] | None = None,
+    model_note: str | None = None,
 ) -> Path:
     best_weights = ROOT / "runs" / "detect" / "train" / "weights" / "best.pt"
     if not best_weights.exists():
@@ -813,13 +988,15 @@ def archive_best_weights(
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     dominant_source = dominant_train_source(train_sample_info or [], dataset_name)
+    note_token = archive_name_token(model_note)
     for _ in range(20):
-        archive_name = f"{compact_model_name(base_model)}_{dominant_source}_{memorable_model_words()}.pt"
+        archive_name = f"{compact_model_name(base_model)}_{now:%m%d}_{note_token}.pt"
         archive_path = ARCHIVE_DIR / archive_name
         if not archive_path.exists():
             break
+        note_token = archive_name_token(model_note)
     else:
-        archive_name = f"{compact_model_name(base_model)}_{dominant_source}_{now:%Y%m%d_%H%M%S}.pt"
+        archive_name = f"{compact_model_name(base_model)}_{now:%m%d}_{now:%H%M%S}.pt"
         archive_path = ARCHIVE_DIR / archive_name
     shutil.copy2(best_weights, archive_path)
 
@@ -829,6 +1006,8 @@ def archive_best_weights(
         "compact_model": compact_model_name(base_model),
         "augment_preset": augment_preset_name,
         "train_args": train_args or {},
+        "model_note": str(model_note or "").strip(),
+        "name_token": note_token,
         "dominant_train_source": dominant_source,
         "train_sample_multipliers": train_sample_info or [],
         "memorable_name": archive_path.stem,
@@ -850,13 +1029,16 @@ def archive_best_weights(
     return archive_path
 
 
-def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None) -> Path:
+def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None, model_note: str | None = None) -> Path:
     base_model = resolve_base_model(base_model)
+    model_note = model_note if model_note is not None else os.environ.get(MODEL_NOTE_ENV, "")
     data_config, dataset_name, train_config_paths, val_config_paths, train_sample_info = training_data_config()
     augment_preset_name, train_args = resolve_augment_preset(augment_preset)
     print(f"Using dataset config: {data_config}")
     print(f"Using base model: {base_model}")
     print(f"Using training preset: {augment_preset_name}")
+    if model_note:
+        print(f"Using model note: {model_note}")
     print(f"Training sample multipliers: {json.dumps(train_sample_info, ensure_ascii=False, sort_keys=True)}")
     print(f"Training args: {json.dumps(train_args, ensure_ascii=False, sort_keys=True)}")
     model = YOLO(model_weight_source(base_model))
@@ -879,6 +1061,7 @@ def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None
         augment_preset_name,
         train_args,
         train_sample_info,
+        model_note,
     )
     print(f"Archived best weights to {archive_path}")
     return archive_path
