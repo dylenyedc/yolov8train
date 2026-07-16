@@ -243,7 +243,7 @@ def archive_options() -> list[tuple[str, Path]]:
         preset = metadata.get("augment_preset", "?")
         sources = ",".join(metadata.get("dataset_sources") or [metadata.get("dataset_name", "?")])
         created_at = metadata.get("created_at", "?")
-        label = f"model={base_model} | preset={preset} | datasets={sources} | time={created_at} | file={weight_path.name}"
+        label = f"{weight_path.name} | datasets={sources} | base={base_model} | time={created_at} | preset={preset}"
         options.append((label, weight_path))
     return options
 

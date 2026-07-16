@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-07-10T16:18:04.397323",
-  "base_model": "yolo26n",
-  "compact_model": "26n",
+  "created_at": "2026-07-11T00:49:20.090488",
+  "base_model": "yolov8n",
+  "compact_model": "8n",
   "augment_preset": "official_default",
   "train_args": {
     "epochs": 100,
@@ -19,9 +19,15 @@
     "close_mosaic": 10
   },
   "model_note": "",
-  "name_token": "vivid_matrix",
-  "dominant_train_source": "white_cylinder_detection",
+  "name_token": "agile_signal",
+  "dominant_train_source": "barrel",
   "train_sample_multipliers": [
+    {
+      "source": "0709shot",
+      "multiplier": 0.5,
+      "original_image_count": 567,
+      "effective_image_count": 284
+    },
     {
       "source": "barrel",
       "multiplier": 0.1,
@@ -36,9 +42,15 @@
     },
     {
       "source": "findtopfullbusket",
-      "multiplier": 0.75,
+      "multiplier": 0.5,
       "original_image_count": 108,
-      "effective_image_count": 81
+      "effective_image_count": 54
+    },
+    {
+      "source": "flashlight",
+      "multiplier": 0.75,
+      "original_image_count": 150,
+      "effective_image_count": 112
     },
     {
       "source": "fromdepth",
@@ -48,45 +60,66 @@
     },
     {
       "source": "golden_golden",
-      "multiplier": 0.75,
+      "multiplier": 1.0,
       "original_image_count": 43,
-      "effective_image_count": 32
+      "effective_image_count": 43
     },
     {
       "source": "white_cylinder_detection",
-      "multiplier": 0.75,
+      "multiplier": 0.33,
       "original_image_count": 449,
-      "effective_image_count": 337
+      "effective_image_count": 148
     }
   ],
-  "memorable_name": "26n_0710_vivid_matrix",
-  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/26n_0710_vivid_matrix.pt",
+  "memorable_name": "8n_0711_agile_signal",
+  "weights": "/home/cqu-996/vscodews/yolov8train/model_archieve/8n_0711_agile_signal.pt",
   "source_weights": "/home/cqu-996/vscodews/yolov8train/runs/detect/train/weights/best.pt",
-  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_barrel_bucket_findtopfullbusket_fromdepth_golden_golden_white_cylinder_detection_valid_fromdepth_golden_golden.yaml",
+  "training_data_config": "/home/cqu-996/vscodews/yolov8train/.generated/cross_0709shot_barrel_bucket_findtopfullbusket_flashlight_fromdepth_golden_golden_white_cylinder_detection_valid_0709shot_flashlight_fromdepth.yaml",
   "is_mixed_dataset": true,
   "is_cross_validation": true,
-  "dataset_name": "train_barrel_bucket_findtopfullbusket_fromdepth_golden_golden_white_cylinder_detection_valid_fromdepth_golden_golden",
+  "dataset_name": "train_0709shot_barrel_bucket_findtopfullbusket_flashlight_fromdepth_golden_golden_white_cylinder_detection_valid_0709shot_flashlight_fromdepth",
   "dataset_sources": [
+    "0709shot",
     "barrel",
     "bucket",
     "findtopfullbusket",
+    "flashlight",
     "fromdepth",
     "golden",
     "white_cylinder_detection"
   ],
   "train_dataset_sources": [
+    "0709shot",
     "barrel",
     "bucket",
     "findtopfullbusket",
+    "flashlight",
     "fromdepth",
     "golden",
     "white_cylinder_detection"
   ],
   "val_dataset_sources": [
-    "fromdepth",
-    "golden"
+    "0709shot",
+    "flashlight",
+    "fromdepth"
   ],
   "train_datasets": [
+    {
+      "dataset_name": "0709shot",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/0709shot",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/0709shot/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "zis-workspace-dvzy1",
+        "project": "cuadc0709",
+        "version": "dataset",
+        "license": "Private",
+        "url": "https://app.roboflow.com/zis-workspace-dvzy1/cuadc0709/dataset"
+      },
+      "version": "dataset"
+    },
     {
       "dataset_name": "barrel",
       "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/barrel",
@@ -132,6 +165,22 @@
         "version": "dataset",
         "license": "CC BY 4.0",
         "url": "https://universe.roboflow.com/cqufly/test_markfull_busket/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "flashlight",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/flashlight",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/flashlight/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromcam0710",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromcam0710/dataset/dataset"
       },
       "version": "dataset"
     },
@@ -186,6 +235,38 @@
   ],
   "val_datasets": [
     {
+      "dataset_name": "0709shot",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/0709shot",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/0709shot/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "zis-workspace-dvzy1",
+        "project": "cuadc0709",
+        "version": "dataset",
+        "license": "Private",
+        "url": "https://app.roboflow.com/zis-workspace-dvzy1/cuadc0709/dataset"
+      },
+      "version": "dataset"
+    },
+    {
+      "dataset_name": "flashlight",
+      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/flashlight",
+      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/flashlight/data.yaml",
+      "class_names": [
+        "busket"
+      ],
+      "roboflow": {
+        "workspace": "cqufly",
+        "project": "fromcam0710",
+        "version": "dataset",
+        "license": "CC BY 4.0",
+        "url": "https://universe.roboflow.com/cqufly/fromcam0710/dataset/dataset"
+      },
+      "version": "dataset"
+    },
+    {
       "dataset_name": "fromdepth",
       "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth",
       "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/fromdepth/data.yaml",
@@ -198,22 +279,6 @@
         "version": "dataset",
         "license": "CC BY 4.0",
         "url": "https://universe.roboflow.com/cqufly/fromdepth/dataset/dataset"
-      },
-      "version": "dataset"
-    },
-    {
-      "dataset_name": "golden",
-      "dataset_root": "/home/cqu-996/vscodews/yolov8train/datasets/golden",
-      "config_path": "/home/cqu-996/vscodews/yolov8train/datasets/golden/data.yaml",
-      "class_names": [
-        "busket"
-      ],
-      "roboflow": {
-        "workspace": "cqufly",
-        "project": "golden-busket-detection",
-        "version": "dataset",
-        "license": "CC BY 4.0",
-        "url": "https://universe.roboflow.com/cqufly/golden-busket-detection/dataset/dataset"
       },
       "version": "dataset"
     }

@@ -423,7 +423,8 @@ def archive_weight_options() -> list[dict[str, str]]:
         train_sources = ",".join(metadata.get("train_dataset_sources") or metadata.get("dataset_sources") or [])
         valid_sources = ",".join(metadata.get("val_dataset_sources") or [])
         created_at = metadata.get("created_at", "?")
-        label = f"archieve | {weight_path.name} | model={base_model} | preset={preset} | train={train_sources} | valid={valid_sources} | {created_at}"
+        dataset_text = f"train={train_sources} | valid={valid_sources}" if valid_sources else f"datasets={train_sources}"
+        label = f"{weight_path.name} | {dataset_text} | base={base_model} | time={created_at} | preset={preset}"
         options.append({"label": label, "value": str(weight_path)})
 
     weights_dir = train.ROOT / "runs" / "detect" / "train" / "weights"
