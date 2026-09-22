@@ -362,6 +362,211 @@ def dataset_metadata(config_path: Path) -> dict:
     }
 
 
+def config_class_names(config_path: Path) -> list[str]:
+    """Load and validate a YOLO class schema in index order."""
+    config = load_yaml(config_path)
+    raw_names = config.get("names")
+    if isinstance(raw_names, dict):
+        indexed_names: dict[int, str] = {}
+        for raw_index, raw_name in raw_names.items():
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{config_path} has a non-integer class index: {raw_index!r}") from error
+            if index < 0 or index in indexed_names:
+                raise ValueError(f"{config_path} has an invalid or duplicate class index: {index}")
+            indexed_names[index] = str(raw_name).strip()
+        expected_indexes = list(range(len(indexed_names)))
+        if sorted(indexed_names) != expected_indexes:
+            raise ValueError(
+                f"{config_path} class indexes must be contiguous from 0; found {sorted(indexed_names)}"
+            )
+        names = [indexed_names[index] for index in expected_indexes]
+    elif isinstance(raw_names, (list, tuple)):
+        names = [str(name).strip() for name in raw_names]
+    else:
+        raise ValueError(f"{config_path} must define a non-empty names mapping or list")
+
+    if not names or any(not name for name in names):
+        raise ValueError(f"{config_path} contains an empty class name")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{config_path} contains duplicate class names: {names}")
+    declared_nc = config.get("nc")
+    if declared_nc is not None and int(declared_nc) != len(names):
+        raise ValueError(f"{config_path} defines nc={declared_nc}, but names contains {len(names)} classes")
+    return names
+
+
+def merged_class_names(config_paths: list[Path]) -> list[str]:
+    """Return a compatible class order without silently changing label meaning.
+
+    A legacy single-class ``[busket]`` dataset is compatible with a newer
+    ``[busket, combine]`` dataset because its class indexes are a prefix of the
+    new schema. Any other index/name disagreement requires an explicit label
+    remap and is rejected before training.
+    """
+    unique_paths = list(dict.fromkeys(Path(path).resolve() for path in config_paths))
+    if not unique_paths:
+        raise ValueError("At least one dataset config is required")
+    schemas = [(path, config_class_names(path)) for path in unique_paths]
+    target_path, target_names = max(schemas, key=lambda item: len(item[1]))
+    for config_path, names in schemas:
+        if target_names[: len(names)] != names:
+            raise ValueError(
+                "Incompatible class schemas; label indexes cannot be merged safely: "
+                f"{target_path} -> {target_names}, {config_path} -> {names}"
+            )
+    return target_names
+
+
+def _resolve_data_entry(config_path: Path, config: dict, value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    base = Path(config.get("path") or config_path.parent)
+    if not base.is_absolute():
+        base = config_path.parent / base
+    return (base / path).resolve()
+
+
+def data_split_image_paths(config_path: Path, split: str) -> list[Path]:
+    """Resolve directories, image files, and Ultralytics image-list files."""
+    config = load_yaml(config_path)
+    raw_value = config.get(split)
+    if raw_value is None:
+        return []
+    values = raw_value if isinstance(raw_value, list) else [raw_value]
+    images: list[Path] = []
+    for value in values:
+        entry = _resolve_data_entry(config_path, config, value)
+        if entry.is_dir():
+            images.extend(path.resolve() for path in entry.rglob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
+        elif entry.is_file() and entry.suffix.lower() == ".txt":
+            for raw_line in entry.read_text(encoding="utf-8").splitlines():
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                image_path = Path(raw_line).expanduser()
+                if not image_path.is_absolute():
+                    image_path = entry.parent / image_path
+                images.append(image_path.resolve())
+        elif entry.is_file() and entry.suffix.lower() in IMAGE_SUFFIXES:
+            images.append(entry)
+        else:
+            raise FileNotFoundError(f"{config_path} defines {split} entry that was not found: {entry}")
+    return list(dict.fromkeys(sorted(images)))
+
+
+def label_path_for_image(image_path: Path) -> Path:
+    parts = list(image_path.parts)
+    indexes = [index for index, part in enumerate(parts) if part == "images"]
+    if not indexes:
+        raise ValueError(f"Image path does not contain an images directory: {image_path}")
+    parts[indexes[-1]] = "labels"
+    return Path(*parts).with_suffix(".txt")
+
+
+def validate_yolo_data_config(config_path: Path) -> dict[str, dict[str, int]]:
+    """Fail early on schema or label errors that otherwise become CUDA asserts."""
+    class_names = config_class_names(config_path)
+    class_count = len(class_names)
+    report: dict[str, dict[str, int]] = {}
+    for split in ("train", "val", "test"):
+        images = data_split_image_paths(config_path, split)
+        if not images:
+            if split in {"train", "val"}:
+                raise ValueError(f"{config_path} must contain at least one {split} image")
+            continue
+        instances = 0
+        backgrounds = 0
+        missing_labels = 0
+        for image_path in images:
+            if not image_path.exists():
+                raise FileNotFoundError(f"{split} image was not found: {image_path}")
+            label_path = label_path_for_image(image_path)
+            if not label_path.exists():
+                backgrounds += 1
+                missing_labels += 1
+                continue
+            lines = [line.strip() for line in label_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if not lines:
+                backgrounds += 1
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                fields = line.split()
+                if len(fields) != 5:
+                    raise ValueError(f"{label_path}:{line_number} must contain 5 fields, got {len(fields)}")
+                try:
+                    raw_class = float(fields[0])
+                    coordinates = [float(value) for value in fields[1:]]
+                except ValueError as error:
+                    raise ValueError(f"{label_path}:{line_number} contains non-numeric YOLO data: {line}") from error
+                if not raw_class.is_integer():
+                    raise ValueError(f"{label_path}:{line_number} class id must be an integer: {fields[0]}")
+                class_id = int(raw_class)
+                if not 0 <= class_id < class_count:
+                    raise ValueError(
+                        f"{label_path}:{line_number} class id {class_id} is outside 0..{class_count - 1} "
+                        f"for classes {class_names}"
+                    )
+                if any(not 0.0 <= value <= 1.0 for value in coordinates) or coordinates[2] <= 0 or coordinates[3] <= 0:
+                    raise ValueError(f"{label_path}:{line_number} has invalid normalized box values: {line}")
+                instances += 1
+        if split in {"train", "val"} and instances == 0:
+            raise ValueError(f"{config_path} {split} split contains no labeled instances")
+        report[split] = {
+            "images": len(images),
+            "instances": instances,
+            "backgrounds": backgrounds,
+            "missing_labels": missing_labels,
+        }
+    return report
+
+
+def clear_yolo_label_caches(config_path: Path) -> list[Path]:
+    """Remove generated caches because their validity depends on the class count."""
+    cache_paths: set[Path] = set()
+    for split in ("train", "val", "test"):
+        for image_path in data_split_image_paths(config_path, split):
+            label_dir = label_path_for_image(image_path).parent
+            cache_paths.add(label_dir.with_suffix(".cache"))
+    removed: list[Path] = []
+    for cache_path in sorted(cache_paths):
+        if cache_path.exists():
+            cache_path.unlink()
+            removed.append(cache_path)
+    return removed
+
+
+def assert_training_runtime(trainer) -> None:
+    """Verify the built model head agrees with the dataset before epoch 1."""
+    model = trainer.model
+    while hasattr(model, "module"):
+        model = model.module
+    if hasattr(model, "student_model"):
+        model = model.student_model
+    expected_nc = int(trainer.data["nc"])
+    head = model.model[-1]
+    actual_nc = int(getattr(head, "nc", -1))
+    model_names = getattr(model, "names", {})
+    if actual_nc != expected_nc or len(model_names) != expected_nc:
+        raise RuntimeError(
+            "Training class mismatch before epoch 1: "
+            f"dataset nc={expected_nc}, model head nc={actual_nc}, model names={model_names}"
+        )
+    observed_classes: set[int] = set()
+    for loader_name in ("train_loader", "test_loader"):
+        loader = getattr(trainer, loader_name, None)
+        if loader is None:
+            continue
+        for label in loader.dataset.labels:
+            observed_classes.update(int(value) for value in label["cls"].reshape(-1).tolist())
+    invalid = sorted(class_id for class_id in observed_classes if not 0 <= class_id < expected_nc)
+    if invalid:
+        raise RuntimeError(f"Dataset contains classes outside model head 0..{expected_nc - 1}: {invalid}")
+    print(f"Runtime class check passed: nc={expected_nc}, names={model_names}, observed={sorted(observed_classes)}")
+
+
 def mixed_dataset_config(config_paths: list[Path]) -> Path:
     names = dataset_names(config_paths)
     train_paths: list[str] = []
@@ -382,11 +587,12 @@ def mixed_dataset_config(config_paths: list[Path]) -> Path:
 
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"mixed_{safe_name('_'.join(names))}.yaml"
+    class_names = merged_class_names(config_paths)
     output = {
         "train": train_paths,
         "val": val_paths,
-        "nc": 1,
-        "names": [MIXED_DATASET_CLASS_NAME],
+        "nc": len(class_names),
+        "names": class_names,
     }
     if test_paths:
         output["test"] = test_paths
@@ -653,11 +859,13 @@ def cross_validation_dataset_config(
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"{output_name}.yaml"
     train_paths, sample_info = materialize_train_sources(train_sources, train_multipliers)
+    source_configs = list(dict.fromkeys(config_path for config_path, _ in train_sources + val_sources))
+    class_names = merged_class_names(source_configs)
     output = {
         "train": train_paths,
         "val": source_split_paths(val_sources, "val"),
-        "nc": 1,
-        "names": [MIXED_DATASET_CLASS_NAME],
+        "nc": len(class_names),
+        "names": class_names,
     }
     val_paths = list(dict.fromkeys(config_path for config_path, _ in val_sources))
     test_paths = optional_split_paths(val_paths, "test")
@@ -681,12 +889,13 @@ def test_dataset_config(
         output_name = safe_name(f"test_{test_name}")
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_DIR / f"{output_name}.yaml"
+    class_names = merged_class_names(list(dict.fromkeys(config_path for config_path, _ in test_sources)))
     output = {
         "train": test_image_paths,
         "val": test_image_paths,
         "test": test_image_paths,
-        "nc": 1,
-        "names": [MIXED_DATASET_CLASS_NAME],
+        "nc": len(class_names),
+        "names": class_names,
     }
     with output_path.open("w", encoding="utf-8") as file:
         yaml.safe_dump(output, file, sort_keys=False, allow_unicode=True)
@@ -907,12 +1116,18 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
         raise FileNotFoundError(f"权重不存在: {missing_weights[0]}")
 
     test_config, test_name, test_sources, test_sample_info = testing_data_config()
+    test_class_names = config_class_names(test_config)
+    test_report = validate_yolo_data_config(test_config)
+    removed_caches = clear_yolo_label_caches(test_config)
     test_multipliers = {item["source"]: item["multiplier"] for item in test_sample_info}
     now = datetime.now()
     output_dir = ROOT / "runs" / "detect" / f"batch_test_{now:%Y%m%d_%H%M%S}_{test_name}"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Test config: {test_config}")
     print(f"Test name: {test_name}")
+    print(f"Test classes: {test_class_names}")
+    print(f"Test dataset preflight: {json.dumps(test_report, ensure_ascii=False, sort_keys=True)}")
+    print(f"Removed stale label caches: {len(removed_caches)}")
     print(f"Test sample multipliers: {json.dumps(test_sample_info, ensure_ascii=False, sort_keys=True)}")
     print(f"Batch output: {output_dir}")
 
@@ -920,7 +1135,18 @@ def run_batch_testing(weight_paths: list[Path]) -> Path:
     for index, weight_path in enumerate(resolved_weights, start=1):
         run_name = f"{index:02d}_{safe_name(weight_path.stem)}"
         print(f"Validate [{index}/{len(resolved_weights)}]: {weight_path}")
-        metrics = YOLO(str(weight_path)).val(
+        model = YOLO(str(weight_path))
+        raw_model_names = model.names
+        if isinstance(raw_model_names, dict):
+            model_class_names = [str(raw_model_names[index]) for index in sorted(raw_model_names)]
+        else:
+            model_class_names = [str(name) for name in raw_model_names]
+        if model_class_names != test_class_names:
+            raise ValueError(
+                f"模型类别与测试集不一致: {weight_path} -> {model_class_names}, "
+                f"{test_config} -> {test_class_names}"
+            )
+        metrics = model.val(
             data=str(test_config),
             split="test",
             device=0,
@@ -1014,6 +1240,8 @@ def archive_best_weights(
         "weights": str(archive_path),
         "source_weights": str(best_weights),
         "training_data_config": str(data_config),
+        "nc": len(config_class_names(data_config)),
+        "class_names": config_class_names(data_config),
         "is_mixed_dataset": len(set(train_config_paths + val_config_paths)) > 1,
         "is_cross_validation": train_config_paths != val_config_paths,
         "dataset_name": dataset_name,
@@ -1033,15 +1261,22 @@ def run_training(base_model: str = BASE_MODEL, augment_preset: str | None = None
     base_model = resolve_base_model(base_model)
     model_note = model_note if model_note is not None else os.environ.get(MODEL_NOTE_ENV, "")
     data_config, dataset_name, train_config_paths, val_config_paths, train_sample_info = training_data_config()
+    class_names = config_class_names(data_config)
+    dataset_report = validate_yolo_data_config(data_config)
+    removed_caches = clear_yolo_label_caches(data_config)
     augment_preset_name, train_args = resolve_augment_preset(augment_preset)
     print(f"Using dataset config: {data_config}")
     print(f"Using base model: {base_model}")
     print(f"Using training preset: {augment_preset_name}")
+    print(f"Using classes: {class_names}")
+    print(f"Dataset preflight: {json.dumps(dataset_report, ensure_ascii=False, sort_keys=True)}")
+    print(f"Removed stale label caches: {len(removed_caches)}")
     if model_note:
         print(f"Using model note: {model_note}")
     print(f"Training sample multipliers: {json.dumps(train_sample_info, ensure_ascii=False, sort_keys=True)}")
     print(f"Training args: {json.dumps(train_args, ensure_ascii=False, sort_keys=True)}")
     model = YOLO(model_weight_source(base_model))
+    model.add_callback("on_pretrain_routine_end", assert_training_runtime)
     model.train(
         data=str(data_config),
         imgsz=640,
